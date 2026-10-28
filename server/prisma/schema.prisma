@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  name          String
+  passwordHash  String
+  workspaceSlug String       @unique
+  role          String       @default("ENGINEER")
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  repositories  Repository[]
+
+  @@index([email])
+  @@index([workspaceSlug])
+}
+
+model Repository {
+  id              String    @id @default(cuid())
+  name            String
+  fullName        String
+  repoUrl         String
+  defaultBranch   String    @default("main")
+  primaryLanguage String?
+  fileCount       Int       @default(0)
+  astNodeCount    Int       @default(0)
+  status          String    @default("IDLE")
+  lastIndexedAt   DateTime?
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+}
+

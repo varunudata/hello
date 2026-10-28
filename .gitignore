@@ -1,1 +1,6 @@
 .commandcode
+node_modules/
+server/.env
+server/.data/
+client/.next/
+client/.env*.local

@@ -65,10 +65,16 @@ export default function Navbar() {
           </nav>
         </div>
 
-        <div className="hidden items-center gap-1 md:flex">
+        <div className="hidden items-center gap-2 md:flex">
           {user ? (
             <>
-              <span className="px-3 text-sm text-muted">{user.name}</span>
+              <span className="px-2 text-sm text-muted">{user.name}</span>
+              <Link
+                href="/home"
+                className="rounded-md bg-ink px-3.5 py-2 text-sm font-medium text-paper transition-colors hover:bg-ink-soft"
+              >
+                Open workspace →
+              </Link>
               <button
                 type="button"
                 onClick={signOut}
@@ -138,13 +144,22 @@ export default function Navbar() {
           </nav>
           <div className="mt-4 grid grid-cols-2 gap-2">
             {user ? (
-              <button
-                type="button"
-                onClick={signOut}
-                className="col-span-2 rounded-md border border-line-strong bg-surface py-2.5 text-sm font-medium text-ink"
-              >
-                Sign out
-              </button>
+              <>
+                <Link
+                  href="/home"
+                  onClick={() => setOpen(false)}
+                  className="rounded-md bg-ink py-2.5 text-center text-sm font-medium text-paper"
+                >
+                  Open workspace
+                </Link>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="rounded-md border border-line-strong bg-surface py-2.5 text-sm font-medium text-ink"
+                >
+                  Sign out
+                </button>
+              </>
             ) : (
               <>
                 <Link

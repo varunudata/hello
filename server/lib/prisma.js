@@ -44,22 +44,18 @@ function writeFallbackUsers(users) {
 
 async function findUserByEmailOrSlug({ email, workspaceSlug }) {
   if (!isPlaceholderUrl()) {
-    try {
-      if (email && workspaceSlug) {
-        return await prisma.user.findFirst({
-          where: {
-            OR: [{ email }, { workspaceSlug }],
-          },
-        });
-      }
-      if (email) {
-        return await prisma.user.findUnique({ where: { email } });
-      }
-      if (workspaceSlug) {
-        return await prisma.user.findUnique({ where: { workspaceSlug } });
-      }
-    } catch (err) {
-      console.warn("[Prisma -> Fallback Notice]:", err.message);
+    if (email && workspaceSlug) {
+      return await prisma.user.findFirst({
+        where: {
+          OR: [{ email }, { workspaceSlug }],
+        },
+      });
+    }
+    if (email) {
+      return await prisma.user.findUnique({ where: { email } });
+    }
+    if (workspaceSlug) {
+      return await prisma.user.findUnique({ where: { workspaceSlug } });
     }
   }
 
@@ -76,14 +72,10 @@ async function findUserByEmailOrSlug({ email, workspaceSlug }) {
 
 async function findUserById(id) {
   if (!isPlaceholderUrl()) {
-    try {
-      return await prisma.user.findUnique({
-        where: { id },
-        include: { repositories: true },
-      });
-    } catch (err) {
-      console.warn("[Prisma -> Fallback Notice]:", err.message);
-    }
+    return await prisma.user.findUnique({
+      where: { id },
+      include: { repositories: true },
+    });
   }
 
   const users = readFallbackUsers();
@@ -92,19 +84,15 @@ async function findUserById(id) {
 
 async function createUserRecord({ email, name, passwordHash, workspaceSlug }) {
   if (!isPlaceholderUrl()) {
-    try {
-      const user = await prisma.user.create({
-        data: {
-          email,
-          name,
-          passwordHash,
-          workspaceSlug,
-        },
-      });
-      return { user, engine: "neon-postgresql" };
-    } catch (err) {
-      console.warn("[Prisma -> Fallback Notice]:", err.message);
-    }
+    const user = await prisma.user.create({
+      data: {
+        email,
+        name,
+        passwordHash,
+        workspaceSlug,
+      },
+    });
+    return { user, engine: "neon-postgresql" };
   }
 
   const users = readFallbackUsers();

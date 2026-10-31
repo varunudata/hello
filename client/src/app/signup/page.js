@@ -56,7 +56,7 @@ export default function SignupPage() {
 
       localStorage.setItem("archon_token", data.token);
       localStorage.setItem("archon_user", JSON.stringify(data.user));
-      router.push("/");
+      router.push("/home");
     } catch {
       setError("We couldn't reach the server. Make sure the API is running on port 4000.");
       setLoading(false);

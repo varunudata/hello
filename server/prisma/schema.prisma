@@ -28,11 +28,18 @@ model Repository {
   name            String
   fullName        String
   repoUrl         String
+  description     String?
   defaultBranch   String    @default("main")
   primaryLanguage String?
   fileCount       Int       @default(0)
+  functionCount   Int       @default(0)
+  packageCount    Int       @default(0)
+  dependencyCount Int       @default(0)
+  totalLines      Int       @default(0)
   astNodeCount    Int       @default(0)
-  status          String    @default("IDLE")
+  healthScore     Int       @default(92)
+  status          String    @default("READY")
+  analysisData    Json?
   lastIndexedAt   DateTime?
   userId          String
   user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -41,4 +48,3 @@ model Repository {
 
   @@index([userId])
 }
-

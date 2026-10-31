@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const authRoutes = require("./routes/auth");
+const projectRoutes = require("./routes/projects");
 const { isPlaceholderUrl } = require("./lib/prisma");
 
 const app = express();
@@ -36,6 +37,7 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/projects", projectRoutes);
 
 app.listen(PORT, () => {
   console.log(`[ARCHON ENGINE] Server listening on http://localhost:${PORT}`);

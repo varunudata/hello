@@ -38,12 +38,16 @@ const PIPELINE_STEPS = [
   "Persisting indexed AST graph to Neon PostgreSQL…",
 ];
 
+const PROJECTS_PER_PAGE = 6; // 2 rows × 3 projects per row
+
 export default function HomePage() {
   const router = useRouter();
   const inputRef = useRef(null);
+  const projectsSectionRef = useRef(null);
 
   const [user, setUser] = useState(null);
   const [projects, setProjects] = useState([]);
+  const [currentPage, setCurrentPage] = useState(1);
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [repoInput, setRepoInput] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -170,6 +174,7 @@ export default function HomePage() {
       setRepoInput("");
 
       if (data?.project?.id) {
+        setCurrentPage(1);
         setProjects((prev) => [
           data.project,
           ...prev.filter((p) => p.id !== data.project.id),
@@ -234,6 +239,26 @@ export default function HomePage() {
     (acc, p) => acc + (p.dependencyCount || 0),
     0
   );
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(projects.length / PROJECTS_PER_PAGE)
+  );
+  const activePage = Math.min(currentPage, totalPages);
+  const pageStartIndex = (activePage - 1) * PROJECTS_PER_PAGE;
+  const paginatedProjects = projects.slice(
+    pageStartIndex,
+    pageStartIndex + PROJECTS_PER_PAGE
+  );
+
+  function goToPage(pageNum) {
+    const clamped = Math.max(1, Math.min(totalPages, pageNum));
+    setCurrentPage(clamped);
+    projectsSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
 
   return (
     <div className="min-h-screen bg-paper text-ink">
@@ -561,7 +586,10 @@ export default function HomePage() {
         </div>
 
         {/* MY PROJECTS SECTION */}
-        <section className="mt-14 border-t border-line pt-10">
+        <section
+          ref={projectsSectionRef}
+          className="mt-14 scroll-mt-20 border-t border-line pt-10"
+        >
           <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
             <div>
               <div className="font-mono text-xs uppercase tracking-[0.14em] text-muted">
@@ -576,6 +604,7 @@ export default function HomePage() {
               <span className="font-mono text-xs text-muted">
                 {projects.length}{" "}
                 {projects.length === 1 ? "repository" : "repositories"} indexed
+                {totalPages > 1 && ` · Page ${activePage} of ${totalPages}`}
               </span>
               <button
                 type="button"
@@ -588,8 +617,8 @@ export default function HomePage() {
           </div>
 
           {loadingProjects ? (
-            <div className="mt-6 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {[1, 2, 3].map((n) => (
+            <div className="mt-6 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+              {[1, 2, 3, 4, 5, 6].map((n) => (
                 <div
                   key={n}
                   className="h-56 animate-pulse rounded-xl border border-line bg-sunken p-6"
@@ -628,102 +657,172 @@ export default function HomePage() {
               </div>
             </div>
           ) : (
-            <div className="mt-6 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-              {projects.map((project) => (
-                <Link
-                  key={project.id}
-                  href={`/projects/${project.id}`}
-                  className="group flex flex-col justify-between rounded-xl border border-line-strong bg-surface p-6 transition-all hover:border-ink"
-                >
-                  <div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 rounded-full bg-sage" />
-                        <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
-                          {project.primaryLanguage || "TypeScript"}
+            <>
+              {/* Strictly 2 rows max × 3 projects per row (6 projects per page) */}
+              <div className="mt-6 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+                {paginatedProjects.map((project) => (
+                  <Link
+                    key={project.id}
+                    href={`/projects/${project.id}`}
+                    className="group flex flex-col justify-between rounded-xl border border-line-strong bg-surface p-6 transition-all hover:border-ink"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-full bg-sage" />
+                          <span className="font-mono text-[11px] uppercase tracking-wider text-muted">
+                            {project.primaryLanguage || "TypeScript"}
+                          </span>
+                          <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-ink-soft">
+                            {project.defaultBranch || "main"}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteProject(e, project.id)}
+                          disabled={deletingId === project.id}
+                          title="Remove project"
+                          className="rounded px-1.5 py-0.5 font-mono text-[11px] text-faint transition-colors hover:bg-sunken hover:text-accent"
+                        >
+                          {deletingId === project.id ? "…" : "Remove"}
+                        </button>
+                      </div>
+
+                      <h3 className="mt-3 truncate font-mono text-base font-semibold text-ink group-hover:text-accent">
+                        {project.fullName}
+                      </h3>
+                      <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted">
+                        {project.description ||
+                          "AST-indexed repository with full function call graph and blast radius metrics."}
+                      </p>
+
+                      {/* 4 Key Metrics Grid */}
+                      <div className="mt-5 grid grid-cols-4 gap-2 rounded-lg border border-line bg-paper p-3">
+                        <div>
+                          <div className="font-mono text-[10px] uppercase text-muted">
+                            Files
+                          </div>
+                          <div className="mt-0.5 font-mono text-sm font-semibold text-ink">
+                            {project.fileCount}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-mono text-[10px] uppercase text-muted">
+                            Funcs
+                          </div>
+                          <div className="mt-0.5 font-mono text-sm font-semibold text-accent">
+                            {project.functionCount}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-mono text-[10px] uppercase text-muted">
+                            Pkgs
+                          </div>
+                          <div className="mt-0.5 font-mono text-sm font-semibold text-ink">
+                            {project.packageCount}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-mono text-[10px] uppercase text-muted">
+                            Deps
+                          </div>
+                          <div className="mt-0.5 font-mono text-sm font-semibold text-ink">
+                            {project.dependencyCount}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
+                      <div className="font-mono text-[11px] text-muted">
+                        Health{" "}
+                        <span className="font-semibold text-ink">
+                          {project.healthScore || 92}%
+                        </span>{" "}
+                        · {(project.totalLines || 0).toLocaleString()} LOC
+                      </div>
+                      <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-ink group-hover:text-accent">
+                        Open project
+                        <span
+                          aria-hidden="true"
+                          className="transition-transform group-hover:translate-x-0.5"
+                        >
+                          →
                         </span>
-                        <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-ink-soft">
-                          {project.defaultBranch || "main"}
-                        </span>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={(e) => handleDeleteProject(e, project.id)}
-                        disabled={deletingId === project.id}
-                        title="Remove project"
-                        className="rounded px-1.5 py-0.5 font-mono text-[11px] text-faint transition-colors hover:bg-sunken hover:text-accent"
-                      >
-                        {deletingId === project.id ? "…" : "Remove"}
-                      </button>
-                    </div>
-
-                    <h3 className="mt-3 truncate font-mono text-base font-semibold text-ink group-hover:text-accent">
-                      {project.fullName}
-                    </h3>
-                    <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted">
-                      {project.description ||
-                        "AST-indexed repository with full function call graph and blast radius metrics."}
-                    </p>
-
-                    {/* 4 Key Metrics Grid */}
-                    <div className="mt-5 grid grid-cols-4 gap-2 rounded-lg border border-line bg-paper p-3">
-                      <div>
-                        <div className="font-mono text-[10px] uppercase text-muted">
-                          Files
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-semibold text-ink">
-                          {project.fileCount}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="font-mono text-[10px] uppercase text-muted">
-                          Funcs
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-semibold text-accent">
-                          {project.functionCount}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="font-mono text-[10px] uppercase text-muted">
-                          Pkgs
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-semibold text-ink">
-                          {project.packageCount}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="font-mono text-[10px] uppercase text-muted">
-                          Deps
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-semibold text-ink">
-                          {project.dependencyCount}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
-                    <div className="font-mono text-[11px] text-muted">
-                      Health{" "}
-                      <span className="font-semibold text-ink">
-                        {project.healthScore || 92}%
-                      </span>{" "}
-                      · {(project.totalLines || 0).toLocaleString()} LOC
-                    </div>
-                    <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-ink group-hover:text-accent">
-                      Open project
-                      <span
-                        aria-hidden="true"
-                        className="transition-transform group-hover:translate-x-0.5"
-                      >
-                        →
                       </span>
-                    </span>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+
+              {/* Pagination Footer */}
+              {totalPages > 1 && (
+                <div className="mt-8 flex flex-col items-center justify-between gap-4 rounded-xl border border-line bg-surface px-5 py-3.5 sm:flex-row">
+                  <div className="font-mono text-xs text-muted">
+                    Showing{" "}
+                    <span className="font-semibold text-ink">
+                      {pageStartIndex + 1}–
+                      {Math.min(
+                        pageStartIndex + PROJECTS_PER_PAGE,
+                        projects.length
+                      )}
+                    </span>{" "}
+                    of{" "}
+                    <span className="font-semibold text-ink">
+                      {projects.length}
+                    </span>{" "}
+                    projects
                   </div>
-                </Link>
-              ))}
-            </div>
+
+                  <nav
+                    aria-label="My Projects pagination"
+                    className="flex items-center gap-1.5"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => goToPage(activePage - 1)}
+                      disabled={activePage === 1}
+                      className="inline-flex h-8 items-center gap-1 rounded-md border border-line-strong bg-paper px-3 font-mono text-xs font-medium text-ink transition-colors hover:border-ink hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <span aria-hidden="true">←</span>
+                      Prev
+                    </button>
+
+                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(
+                      (page) => {
+                        const isActive = page === activePage;
+                        return (
+                          <button
+                            key={page}
+                            type="button"
+                            onClick={() => goToPage(page)}
+                            aria-current={isActive ? "page" : undefined}
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border font-mono text-xs font-medium transition-colors ${
+                              isActive
+                                ? "border-ink bg-ink text-paper"
+                                : "border-line-strong bg-paper text-ink-soft hover:border-ink hover:bg-surface hover:text-ink"
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        );
+                      }
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => goToPage(activePage + 1)}
+                      disabled={activePage === totalPages}
+                      className="inline-flex h-8 items-center gap-1 rounded-md border border-line-strong bg-paper px-3 font-mono text-xs font-medium text-ink transition-colors hover:border-ink hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Next
+                      <span aria-hidden="true">→</span>
+                    </button>
+                  </nav>
+                </div>
+              )}
+            </>
           )}
         </section>
       </main>

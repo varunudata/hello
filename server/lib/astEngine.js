@@ -10,10 +10,40 @@ const CODE_EXTENSIONS = {
   ".mjs": "JavaScript",
   ".cjs": "JavaScript",
   ".py": "Python",
+  ".ipynb": "Python",
   ".go": "Go",
   ".rs": "Rust",
   ".java": "Java",
 };
+
+function isInternalImportPath(source) {
+  if (!source) return false;
+  return (
+    source.startsWith(".") ||
+    source.startsWith("/") ||
+    source.startsWith("@/") ||
+    source.startsWith("~/")
+  );
+}
+
+function extractNotebookCode(rawContent) {
+  try {
+    const nb = JSON.parse(rawContent);
+    if (!Array.isArray(nb.cells)) return rawContent;
+    const chunks = [];
+    for (const cell of nb.cells) {
+      if (cell.cell_type === "code" && cell.source) {
+        const text = Array.isArray(cell.source)
+          ? cell.source.join("")
+          : String(cell.source);
+        chunks.push(text);
+      }
+    }
+    return chunks.join("\n\n");
+  } catch {
+    return "";
+  }
+}
 
 function getExtension(filePath) {
   const idx = filePath.lastIndexOf(".");
@@ -123,6 +153,14 @@ function parseJsTsWithBabelAst(code, filePath, language) {
               referencedIdentifiers.add(callee.object.name);
             }
           }
+        } else if (t === "JSXOpeningElement") {
+          const jsxName = childPath.node.name;
+          if (
+            jsxName?.type === "JSXIdentifier" &&
+            /^[A-Z]/.test(jsxName.name)
+          ) {
+            rawCalls.add(jsxName.name);
+          }
         } else if (t === "Identifier") {
           referencedIdentifiers.add(childPath.node.name);
         }
@@ -166,7 +204,7 @@ function parseJsTsWithBabelAst(code, filePath, language) {
       const specifiers = (path.node.specifiers || [])
         .map((s) => s.local?.name)
         .filter(Boolean);
-      const isExternal = !source.startsWith(".") && !source.startsWith("/");
+      const isExternal = !isInternalImportPath(source);
       imports.push({ source, specifiers, isExternal });
     },
     CallExpression(path) {
@@ -179,7 +217,7 @@ function parseJsTsWithBabelAst(code, filePath, language) {
         arg?.type === "StringLiteral"
       ) {
         const source = arg.value;
-        const isExternal = !source.startsWith(".") && !source.startsWith("/");
+        const isExternal = !isInternalImportPath(source);
         const specifiers = [];
         if (path.parent.type === "VariableDeclarator") {
           if (path.parent.id.type === "Identifier") {
@@ -235,10 +273,34 @@ function parseJsTsWithBabelAst(code, filePath, language) {
       }
     },
     ExportDefaultDeclaration(path) {
-      if (path.node.declaration?.id?.name) {
-        exportsList.push(path.node.declaration.id.name);
+      const decl = path.node.declaration;
+      if (decl?.id?.name) {
+        exportsList.push(decl.id.name);
       } else {
         exportsList.push("default");
+        if (
+          decl &&
+          (decl.type === "ArrowFunctionExpression" ||
+            decl.type === "FunctionExpression" ||
+            decl.type === "FunctionDeclaration")
+        ) {
+          const baseName = filePath
+            .split("/")
+            .slice(-2)
+            .join("_")
+            .replace(/\.[a-zA-Z0-9]+$/, "")
+            .replace(/[^a-zA-Z0-9_]/g, "_");
+          const fallbackName = `default_${baseName || "export"}`;
+          if (!seenNames.has(fallbackName)) {
+            seenNames.add(fallbackName);
+            extractFunctionNode(
+              path.get("declaration"),
+              fallbackName,
+              "default-function",
+              true
+            );
+          }
+        }
       }
     },
     FunctionDeclaration(path) {
@@ -488,7 +550,13 @@ function buildRepositoryAnalysis({
     const language = CODE_EXTENSIONS[ext];
     if (!language || !fileObj.content) continue;
 
-    const linesCount = fileObj.content.split(/\r?\n/).length;
+    const effectiveContent =
+      ext === ".ipynb"
+        ? extractNotebookCode(fileObj.content)
+        : fileObj.content;
+    if (!effectiveContent) continue;
+
+    const linesCount = effectiveContent.split(/\r?\n/).length;
     totalLines += linesCount;
 
     if (!languageTotals[language]) {
@@ -499,11 +567,11 @@ function buildRepositoryAnalysis({
 
     let astResult = null;
     if (language === "TypeScript" || language === "JavaScript") {
-      astResult = parseJsTsWithBabelAst(fileObj.content, fileObj.path, language);
+      astResult = parseJsTsWithBabelAst(effectiveContent, fileObj.path, language);
     }
     if (!astResult) {
       astResult = parseOtherLanguageSyntax(
-        fileObj.content,
+        effectiveContent,
         fileObj.path,
         language
       );
@@ -576,13 +644,15 @@ function buildRepositoryAnalysis({
     for (const imp of f.imports) {
       if (!imp.isExternal) {
         const cleanTarget = imp.source
-          .replace(/^\.\//, "")
-          .replace(/^\.\.\//, "");
+          .replace(/^(@|~)\//, "")
+          .replace(/^(\.\.?\/)+/, "");
         const matchedFile = parsedFiles.find(
           (cand) =>
             cand.path !== f.path &&
             (cand.path.endsWith(cleanTarget) ||
-              cand.path.replace(/\.(ts|tsx|js|jsx|py|go|rs|java)$/, "").endsWith(cleanTarget))
+              cand.path
+                .replace(/\.(ts|tsx|js|jsx|mjs|cjs|py|ipynb|go|rs|java)$/, "")
+                .endsWith(cleanTarget))
         );
         if (matchedFile) {
           fileImportedByMap.get(matchedFile.path)?.add(f.path);

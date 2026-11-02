@@ -101,6 +101,7 @@ function ProjectWorkspaceContent() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [graphNodeLimit, setGraphNodeLimit] = useState(24);
 
   useEffect(() => {
     let token = null;
@@ -125,8 +126,11 @@ function ProjectWorkspaceContent() {
     async function loadProject() {
       setLoading(true);
       setError("");
+      setProject(null);
+      setSelectedFnId(null);
       try {
         const res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
+          cache: "no-store",
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.status === 401) {
@@ -206,10 +210,30 @@ function ProjectWorkspaceContent() {
     return allFunctions.find((f) => f.id === selectedFnId) || null;
   }, [allFunctions, selectedFnId]);
 
-  // Compute deterministic architectural graph layout for all functions
+  // Compute deterministic architectural graph layout for visible functions
   const graphLayout = useMemo(() => {
-    const fns = filteredFunctions;
-    if (fns.length === 0) return { nodes: [], edges: [], width: 1000, height: 660 };
+    if (filteredFunctions.length === 0) {
+      return { nodes: [], edges: [], width: 1000, height: 660, totalFiltered: 0 };
+    }
+
+    // Cap rendered SVG nodes to keep typography crisp on huge 100-1000+ fn repos,
+    // while always including the currently selected function and its direct neighbors
+    const visibleSet = new Map();
+    for (const fn of filteredFunctions.slice(0, graphNodeLimit)) {
+      visibleSet.set(fn.id, fn);
+    }
+    if (selectedFunction) {
+      visibleSet.set(selectedFunction.id, selectedFunction);
+      for (const c of selectedFunction.calledByFunctions || []) {
+        const match = allFunctions.find((f) => f.id === c.id);
+        if (match) visibleSet.set(match.id, match);
+      }
+      for (const c of selectedFunction.callsFunctions || []) {
+        const match = allFunctions.find((f) => f.id === c.id);
+        if (match) visibleSet.set(match.id, match);
+      }
+    }
+    const fns = Array.from(visibleSet.values());
 
     // Group functions into architectural tiers based on callers/callees or folder
     // Tier 0: Entry / Route / Page / Component functions (few callers, many callees)
@@ -295,8 +319,16 @@ function ProjectWorkspaceContent() {
       edges: visibleEdges,
       width: canvasWidth,
       height: canvasHeight,
+      totalFiltered: filteredFunctions.length,
     };
-  }, [filteredFunctions, allEdges, selectedFnId]);
+  }, [
+    filteredFunctions,
+    allFunctions,
+    allEdges,
+    selectedFnId,
+    selectedFunction,
+    graphNodeLimit,
+  ]);
 
   function openFunctionInGraph(fnId) {
     setSelectedFnId(fnId);
@@ -1444,6 +1476,29 @@ function ProjectWorkspaceContent() {
                       Opens the left function inspector popup with blast radius &
                       dependency impact.
                     </div>
+                  </div>
+                )}
+
+                {graphLayout.totalFiltered > graphLayout.nodes.length && (
+                  <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2.5 rounded-lg border border-line-strong bg-surface/95 px-3.5 py-2 shadow-sm">
+                    <span className="font-mono text-[11px] text-muted">
+                      Showing{" "}
+                      <strong className="text-ink">
+                        {graphLayout.nodes.length}
+                      </strong>{" "}
+                      of{" "}
+                      <strong className="text-ink">
+                        {graphLayout.totalFiltered}
+                      </strong>{" "}
+                      AST functions
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setGraphNodeLimit((n) => n + 24)}
+                      className="rounded border border-line-strong bg-paper px-2.5 py-1 font-mono text-[11px] font-medium text-ink transition-colors hover:border-ink hover:text-accent"
+                    >
+                      + Show 24 more
+                    </button>
                   </div>
                 )}
 

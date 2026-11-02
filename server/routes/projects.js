@@ -1,6 +1,8 @@
 const express = require("express");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const jwt = require("jsonwebtoken");
 const { prisma } = require("../lib/prisma");
 const {
@@ -491,127 +493,272 @@ export async function handleCancelOrderPost(req: any, res: any) {
   };
 }
 
+const IGNORED_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  "vendor",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".turbo",
+  ".cache",
+]);
+
+function walkDirectory(dir, baseDir, collected = []) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return collected;
+  }
+
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const absPath = path.join(dir, entry.name);
+    const relPath = path.relative(baseDir, absPath).split(path.sep).join("/");
+
+    if (entry.isDirectory()) {
+      if (!IGNORED_DIRS.has(entry.name)) {
+        walkDirectory(absPath, baseDir, collected);
+      }
+    } else if (entry.isFile()) {
+      let size = 0;
+      try {
+        size = fs.statSync(absPath).size;
+      } catch {
+        size = 0;
+      }
+      collected.push({ absPath, relPath, size });
+    }
+  }
+  return collected;
+}
+
+function extractDescriptionFromReadme(readmeText) {
+  if (!readmeText) return "";
+  const lines = readmeText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        l &&
+        !l.startsWith("#") &&
+        !l.startsWith("!") &&
+        !l.startsWith("[!") &&
+        !l.startsWith("<") &&
+        !l.startsWith("```") &&
+        !l.startsWith("---") &&
+        l.length > 20
+    );
+  if (!lines.length) return "";
+  const first = lines[0].replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  return first.length > 200 ? first.slice(0, 197) + "..." : first;
+}
+
 /**
- * Fetch repository files from GitHub REST API + raw.githubusercontent.com
+ * Fetch repository files directly via GitHub's codeload tarball stream.
+ * Immune to api.github.com's 60 req/hr unauthenticated REST rate limit!
  */
 async function fetchGithubRepositoryFiles(owner, repo) {
-  const headers = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "Archon-AST-Analyzer/2.4",
-  };
-  if (process.env.GITHUB_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  }
+  const archiveUrl = `https://codeload.github.com/${encodeURIComponent(
+    owner
+  )}/${encodeURIComponent(repo)}/tar.gz/HEAD`;
 
-  const metaRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-    headers,
-    signal: AbortSignal.timeout(8000),
+  const archiveRes = await fetch(archiveUrl, {
+    headers: {
+      "User-Agent": "Archon-AST-Analyzer/2.5",
+    },
+    signal: AbortSignal.timeout(25000),
   });
 
-  if (!metaRes.ok) {
-    throw new Error(`GitHub API returned ${metaRes.status}`);
+  if (archiveRes.status === 404) {
+    const err = new Error(
+      `Repository "${owner}/${repo}" was not found on GitHub (or is private). Make sure the URL is spelled correctly and the repository is public.`
+    );
+    err.statusCode = 404;
+    err.errorCode = "REPO_NOT_FOUND";
+    throw err;
   }
 
-  const meta = await metaRes.json();
-  const defaultBranch = meta.default_branch || "main";
-  const description = meta.description || "";
-
-  const treeRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`,
-    { headers, signal: AbortSignal.timeout(10000) }
-  );
-
-  if (!treeRes.ok) {
-    throw new Error(`GitHub Tree API returned ${treeRes.status}`);
+  if (!archiveRes.ok) {
+    const err = new Error(
+      `GitHub archive download returned HTTP ${archiveRes.status} for "${owner}/${repo}".`
+    );
+    err.statusCode = 502;
+    err.errorCode = "GITHUB_DOWNLOAD_FAILED";
+    throw err;
   }
 
-  const treeData = await treeRes.json();
-  const blobs = (treeData.tree || []).filter((item) => item.type === "blob");
+  // Detect default branch via git ls-remote (does not use REST API quota)
+  let defaultBranch = "main";
+  try {
+    const lsOut = execFileSync(
+      "git",
+      [
+        "ls-remote",
+        "--symref",
+        `https://github.com/${owner}/${repo}.git`,
+        "HEAD",
+      ],
+      { encoding: "utf8", timeout: 4500, stdio: ["ignore", "pipe", "ignore"] }
+    );
+    const branchMatch = lsOut.match(/ref:\s+refs\/heads\/([^\s]+)\s+HEAD/);
+    if (branchMatch?.[1]) {
+      defaultBranch = branchMatch[1];
+    }
+  } catch {
+    // keep default "main"
+  }
 
-  // Find manifest files (package.json, requirements.txt)
-  const manifestPaths = blobs
-    .filter(
-      (b) =>
-        b.path.endsWith("package.json") || b.path.endsWith("requirements.txt")
-    )
-    .slice(0, 3);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-repo-"));
+  const tarPath = path.join(tmpDir, "repo.tar.gz");
+  const extractDir = path.join(tmpDir, "extracted");
+  fs.mkdirSync(extractDir, { recursive: true });
 
-  // Find source code files (prioritize src/, app/, lib/, server/, routes/, components/)
-  const codeBlobs = blobs
-    .filter((b) => {
-      const ext = getExtension(b.path);
-      if (!CODE_EXTENSIONS[ext]) return false;
-      if (
-        b.path.includes("node_modules/") ||
-        b.path.includes("dist/") ||
-        b.path.includes("build/") ||
-        b.path.includes(".next/") ||
-        b.path.includes("vendor/") ||
-        b.path.endsWith(".min.js") ||
-        b.path.endsWith(".d.ts")
-      ) {
-        return false;
+  try {
+    const arrayBuf = await archiveRes.arrayBuffer();
+    fs.writeFileSync(tarPath, Buffer.from(arrayBuf));
+
+    execFileSync("tar", ["-xzf", tarPath, "-C", extractDir], {
+      timeout: 15000,
+    });
+
+    const topEntries = fs
+      .readdirSync(extractDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory());
+    const repoRoot =
+      topEntries.length === 1
+        ? path.join(extractDir, topEntries[0].name)
+        : extractDir;
+
+    const allFiles = walkDirectory(repoRoot, repoRoot);
+
+    // 1. Extract manifest files (package.json, requirements.txt)
+    const packageJsonList = [];
+    let requirementsTxt = "";
+    let pkgDescription = "";
+
+    const manifestFiles = allFiles
+      .filter(
+        (f) =>
+          f.relPath.endsWith("package.json") ||
+          f.relPath.endsWith("requirements.txt")
+      )
+      .slice(0, 6);
+
+    for (const mf of manifestFiles) {
+      try {
+        const content = fs.readFileSync(mf.absPath, "utf8");
+        if (mf.relPath.endsWith("package.json")) {
+          packageJsonList.push(content);
+          if (!pkgDescription) {
+            try {
+              const parsedPkg = JSON.parse(content);
+              if (parsedPkg.description) pkgDescription = parsedPkg.description;
+            } catch {
+              // ignore
+            }
+          }
+        } else if (mf.relPath.endsWith("requirements.txt")) {
+          requirementsTxt += "\n" + content;
+        }
+      } catch {
+        // ignore
       }
-      return (b.size || 0) < 120000;
-    })
-    .sort((a, b) => {
-      const score = (p) =>
-        p.startsWith("src/") ||
-        p.startsWith("server/") ||
-        p.startsWith("app/") ||
-        p.startsWith("lib/")
-          ? 0
-          : 1;
-      return score(a.path) - score(b.path);
-    })
-    .slice(0, 38);
+    }
 
-  const fetchRawFile = async (filePath) => {
+    // 2. Extract description from README if available
+    let readmeDescription = "";
+    const readmeEntry = allFiles.find(
+      (f) => f.relPath.toLowerCase() === "readme.md"
+    );
+    if (readmeEntry && readmeEntry.size < 250000) {
+      try {
+        readmeDescription = extractDescriptionFromReadme(
+          fs.readFileSync(readmeEntry.absPath, "utf8")
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    // 3. Select and read source code files
+    const codeEntries = allFiles
+      .filter((f) => {
+        const ext = getExtension(f.relPath);
+        if (!CODE_EXTENSIONS[ext]) return false;
+        if (
+          f.relPath.endsWith(".min.js") ||
+          f.relPath.endsWith(".bundle.js") ||
+          f.relPath.endsWith(".d.ts")
+        ) {
+          return false;
+        }
+        const maxBytes = ext === ".ipynb" ? 3000000 : 300000;
+        return f.size > 0 && f.size <= maxBytes;
+      })
+      .sort((a, b) => {
+        const priority = (p) =>
+          p.startsWith("src/") ||
+          p.startsWith("app/") ||
+          p.startsWith("server/") ||
+          p.startsWith("client/src/") ||
+          p.startsWith("components/") ||
+          p.startsWith("pages/") ||
+          p.startsWith("lib/") ||
+          p.startsWith("notebooks/")
+            ? 0
+            : 1;
+        return priority(a.relPath) - priority(b.relPath);
+      })
+      .slice(0, 75);
+
+    const validSourceFiles = [];
+    for (const entry of codeEntries) {
+      try {
+        const content = fs.readFileSync(entry.absPath, "utf8");
+        validSourceFiles.push({ path: entry.relPath, content });
+      } catch {
+        // ignore unreadable file
+      }
+    }
+
+    if (validSourceFiles.length === 0) {
+      const err = new Error(
+        `Repository "${owner}/${repo}" contains no supported code files (.js, .jsx, .ts, .tsx, .py, .ipynb, .go, .rs, .java).`
+      );
+      err.statusCode = 422;
+      err.errorCode = "NO_SUPPORTED_FILES";
+      throw err;
+    }
+
+    return {
+      repoName: repo,
+      fullName: `${owner}/${repo}`,
+      repoUrl: `https://github.com/${owner}/${repo}`,
+      description: pkgDescription || readmeDescription || "",
+      defaultBranch,
+      sourceFiles: validSourceFiles,
+      packageJsonList,
+      requirementsTxt,
+    };
+  } finally {
     try {
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${defaultBranch}/${filePath}`;
-      const res = await fetch(rawUrl, { signal: AbortSignal.timeout(6000) });
-      if (!res.ok) return null;
-      const content = await res.text();
-      return { path: filePath, content };
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
-      return null;
-    }
-  };
-
-  const [manifestFiles, fetchedSourceFiles] = await Promise.all([
-    Promise.all(manifestPaths.map((m) => fetchRawFile(m.path))),
-    Promise.all(codeBlobs.map((c) => fetchRawFile(c.path))),
-  ]);
-
-  const packageJsonList = [];
-  let requirementsTxt = "";
-  for (const mf of manifestFiles.filter(Boolean)) {
-    if (mf.path.endsWith("package.json")) {
-      packageJsonList.push(mf.content);
-    } else if (mf.path.endsWith("requirements.txt")) {
-      requirementsTxt += "\n" + mf.content;
+      // ignore cleanup error
     }
   }
-
-  const validSourceFiles = fetchedSourceFiles.filter(Boolean);
-  if (validSourceFiles.length === 0) {
-    throw new Error("No supported source code files found in repository");
-  }
-
-  return {
-    repoName: repo,
-    fullName: `${owner}/${repo}`,
-    repoUrl: `https://github.com/${owner}/${repo}`,
-    description,
-    defaultBranch,
-    sourceFiles: validSourceFiles,
-    packageJsonList,
-    requirementsTxt,
-  };
 }
 
 // GET /api/projects — List all projects for current user
 router.get("/", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate");
   try {
     const projects = await prisma.repository.findMany({
       where: { userId: req.user.id },
@@ -653,6 +800,7 @@ router.get("/", requireAuth, async (req, res) => {
 
 // GET /api/projects/:id — Fetch single project with full AST analysisData
 router.get("/:id", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate");
   try {
     const project = await prisma.repository.findFirst({
       where: {
@@ -705,53 +853,67 @@ router.post("/analyze", requireAuth, async (req, res) => {
 
     let rawRepoBundle = null;
 
-    // Built-in presets or live GitHub fetch
+    // Only explicit built-in presets use template files; real GitHub URLs ALWAYS fetch the real repository!
     if (
       parsedGh.fullName === "archon/self-workspace" ||
       parsedGh.fullName === "acme/storefront-api"
     ) {
       rawRepoBundle = getTemplateSourceFiles(parsedGh.fullName);
     } else {
-      try {
-        rawRepoBundle = await fetchGithubRepositoryFiles(
-          parsedGh.owner,
-          parsedGh.repo
-        );
-      } catch (fetchErr) {
-        console.warn(
-          `[GitHub Fetch Fallback for ${parsedGh.fullName}]:`,
-          fetchErr.message
-        );
-        // Fallback to template files named after the requested repo so analysis always succeeds
-        rawRepoBundle = getTemplateSourceFiles(parsedGh.fullName);
-      }
+      rawRepoBundle = await fetchGithubRepositoryFiles(
+        parsedGh.owner,
+        parsedGh.repo
+      );
     }
 
     // Run Babel AST Engine on the source files
     const analysis = buildRepositoryAnalysis(rawRepoBundle);
 
-    // Save in Neon PostgreSQL via Prisma
-    const savedProject = await prisma.repository.create({
-      data: {
-        name: analysis.repoName,
-        fullName: analysis.fullName,
-        repoUrl: analysis.repoUrl,
-        description: analysis.description,
-        defaultBranch: analysis.defaultBranch,
-        primaryLanguage: analysis.primaryLanguage,
-        fileCount: analysis.fileCount,
-        functionCount: analysis.functionCount,
-        packageCount: analysis.packageCount,
-        dependencyCount: analysis.dependencyCount,
-        totalLines: analysis.totalLines,
-        astNodeCount: analysis.astNodeCount,
-        healthScore: analysis.healthScore,
-        status: "READY",
-        analysisData: analysis,
-        lastIndexedAt: new Date(),
+    const projectPayload = {
+      name: analysis.repoName,
+      fullName: analysis.fullName,
+      repoUrl: analysis.repoUrl,
+      description: analysis.description,
+      defaultBranch: analysis.defaultBranch,
+      primaryLanguage: analysis.primaryLanguage,
+      fileCount: analysis.fileCount,
+      functionCount: analysis.functionCount,
+      packageCount: analysis.packageCount,
+      dependencyCount: analysis.dependencyCount,
+      totalLines: analysis.totalLines,
+      astNodeCount: analysis.astNodeCount,
+      healthScore: analysis.healthScore,
+      status: "READY",
+      analysisData: analysis,
+      lastIndexedAt: new Date(),
+    };
+
+    // Upsert for this user + fullName so re-analyzing updates cleanly instead of leaving stale duplicates
+    const existingProject = await prisma.repository.findFirst({
+      where: {
         userId: req.user.id,
+        fullName: {
+          equals: analysis.fullName,
+          mode: "insensitive",
+        },
       },
+      orderBy: { updatedAt: "desc" },
     });
+
+    let savedProject;
+    if (existingProject) {
+      savedProject = await prisma.repository.update({
+        where: { id: existingProject.id },
+        data: projectPayload,
+      });
+    } else {
+      savedProject = await prisma.repository.create({
+        data: {
+          ...projectPayload,
+          userId: req.user.id,
+        },
+      });
+    }
 
     return res.status(201).json({
       status: "INDEXED",
@@ -759,9 +921,11 @@ router.post("/analyze", requireAuth, async (req, res) => {
     });
   } catch (err) {
     console.error("[POST /api/projects/analyze ERROR]:", err);
-    return res.status(500).json({
-      error: "ANALYSIS_FAILED",
-      message: "Failed to parse repository AST. Please try again.",
+    const statusCode = err.statusCode || 500;
+    return res.status(statusCode).json({
+      error: err.errorCode || "ANALYSIS_FAILED",
+      message:
+        err.message || "Failed to parse repository AST. Please try again.",
     });
   }
 });

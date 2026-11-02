@@ -68,8 +68,26 @@ export default function HomePage() {
       return;
     }
 
+    setAnalyzing(false);
+    setStepIndex(0);
     setUser(savedUser);
     fetchProjects(token);
+
+    const handlePageRestore = () => {
+      setAnalyzing(false);
+      setStepIndex(0);
+      const latestToken = localStorage.getItem("archon_token");
+      if (latestToken) {
+        fetchProjects(latestToken, true);
+      }
+    };
+
+    window.addEventListener("pageshow", handlePageRestore);
+    window.addEventListener("popstate", handlePageRestore);
+    return () => {
+      window.removeEventListener("pageshow", handlePageRestore);
+      window.removeEventListener("popstate", handlePageRestore);
+    };
   }, [router]);
 
   useEffect(() => {
@@ -85,12 +103,13 @@ export default function HomePage() {
     return () => clearInterval(interval);
   }, [analyzing]);
 
-  async function fetchProjects(tokenOverride) {
-    setLoadingProjects(true);
+  async function fetchProjects(tokenOverride, silent = false) {
+    if (!silent) setLoadingProjects(true);
     try {
       const token =
         tokenOverride || localStorage.getItem("archon_token") || "";
       const res = await fetch(`${API_BASE}/api/projects`, {
+        cache: "no-store",
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -108,7 +127,7 @@ export default function HomePage() {
     } catch {
       // ignore network error on initial load
     } finally {
-      setLoadingProjects(false);
+      if (!silent) setLoadingProjects(false);
     }
   }
 
@@ -121,11 +140,13 @@ export default function HomePage() {
     }
 
     setError("");
+    setStepIndex(0);
     setAnalyzing(true);
     try {
       const token = localStorage.getItem("archon_token") || "";
       const res = await fetch(`${API_BASE}/api/projects/analyze`, {
         method: "POST",
+        cache: "no-store",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
@@ -139,20 +160,30 @@ export default function HomePage() {
       if (!res.ok) {
         setError(data?.message || "Could not analyze repository.");
         setAnalyzing(false);
+        setStepIndex(0);
         return;
       }
 
+      // Always reset analyzing state & input BEFORE navigating so Back button never shows a stuck loader
+      setAnalyzing(false);
+      setStepIndex(0);
+      setRepoInput("");
+
       if (data?.project?.id) {
+        setProjects((prev) => [
+          data.project,
+          ...prev.filter((p) => p.id !== data.project.id),
+        ]);
         router.push(`/projects/${data.project.id}`);
       } else {
         await fetchProjects(token);
-        setAnalyzing(false);
       }
     } catch {
       setError(
         "Unable to reach the AST analysis server on port 4000. Verify the backend is running."
       );
       setAnalyzing(false);
+      setStepIndex(0);
     }
   }
 

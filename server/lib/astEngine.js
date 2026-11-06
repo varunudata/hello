@@ -95,7 +95,7 @@ function parseJsTsWithBabelAst(code, filePath, language) {
     const lineCount = Math.max(1, endLine - startLine + 1);
     const snippetLines = lines.slice(
       Math.max(0, startLine - 1),
-      Math.min(lines.length, startLine + 17)
+      Math.min(lines.length, Math.min(endLine, startLine + 55))
     );
     const codeSnippet = snippetLines.join("\n");
     const fullBodyText = lines
@@ -459,7 +459,7 @@ function parseOtherLanguageSyntax(code, filePath, language) {
       complexity: 1 + branchMatches.length,
       rawCalls: Array.from(new Set(callMatches)),
       referencedIdentifiers: Array.from(new Set(callMatches)),
-      codeSnippet: lines.slice(i, Math.min(lines.length, i + 16)).join("\n"),
+      codeSnippet: lines.slice(i, Math.min(lines.length, Math.min(endLine, i + 50))).join("\n"),
     });
   }
 

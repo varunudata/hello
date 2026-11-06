@@ -40,6 +40,17 @@ const PIPELINE_STEPS = [
 
 const PROJECTS_PER_PAGE = 6; // 2 rows × 3 projects per row
 
+function cleanDescription(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^>\s*/, "")
+    .trim();
+}
+
 export default function HomePage() {
   const router = useRouter();
   const inputRef = useRef(null);
@@ -693,7 +704,7 @@ export default function HomePage() {
                         {project.fullName}
                       </h3>
                       <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted">
-                        {project.description ||
+                        {cleanDescription(project.description) ||
                           "AST-indexed repository with full function call graph and blast radius metrics."}
                       </p>
 

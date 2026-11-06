@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -28,9 +28,9 @@ const NAV_ITEMS = [
     id: "ask",
     num: "03",
     label: "Ask Codebase",
-    sub: "Trace functions & workflows",
-    badge: "SOON",
-    active: false,
+    sub: "Graph-aware AST RAG & flow tracing",
+    badge: "RAG",
+    active: true,
   },
   {
     id: "reports",
@@ -41,6 +41,155 @@ const NAV_ITEMS = [
     active: false,
   },
 ];
+
+function renderInlineMarkdown(text) {
+  if (!text) return null;
+  const cleaned = String(text).replace(/<br\s*\/?>/gi, " · ");
+  const tokens = cleaned.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return tokens.map((part, idx) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return (
+        <strong key={idx} className="font-semibold text-ink">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+      return (
+        <code
+          key={idx}
+          className="rounded border border-line bg-sunken px-1.5 py-0.5 font-mono text-[11px] font-medium text-ink"
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return <span key={idx}>{part}</span>;
+  });
+}
+
+function RagMarkdownContent({ content }) {
+  if (!content) return null;
+  const segments = String(content).split(/(```[\s\S]*?```)/g);
+
+  return (
+    <div className="space-y-3 text-sm leading-relaxed text-ink-soft">
+      {segments.map((segment, segIdx) => {
+        if (segment.startsWith("```") && segment.endsWith("```")) {
+          const lines = segment.slice(3, -3).trim().split("\n");
+          const firstLine = lines[0]?.trim() || "";
+          const hasLang = /^[a-zA-Z0-9_-]+$/.test(firstLine);
+          const lang = hasLang ? firstLine : "code";
+          const codeBody = hasLang ? lines.slice(1).join("\n") : lines.join("\n");
+
+          return (
+            <div
+              key={segIdx}
+              className="my-3 overflow-hidden rounded-lg border border-line-strong bg-sunken"
+            >
+              <div className="flex items-center justify-between border-b border-line bg-paper px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">
+                <span>AST Slice · {lang}</span>
+                <span>Retrieved Function Body</span>
+              </div>
+              <pre className="overflow-x-auto p-3.5 font-mono text-xs leading-relaxed text-ink">
+                <code>{codeBody}</code>
+              </pre>
+            </div>
+          );
+        }
+
+        const blocks = segment
+          .split(/\n{2,}/)
+          .map((b) => b.trim())
+          .filter(Boolean);
+
+        return blocks.map((block, bIdx) => {
+          const key = `${segIdx}-${bIdx}`;
+          if (block.startsWith("##### ")) {
+            return (
+              <h5
+                key={key}
+                className="mt-3 font-mono text-xs font-semibold uppercase tracking-wider text-accent"
+              >
+                {renderInlineMarkdown(block.slice(6))}
+              </h5>
+            );
+          }
+          if (block.startsWith("#### ")) {
+            return (
+              <h4
+                key={key}
+                className="mt-4 text-sm font-semibold tracking-tight text-ink"
+              >
+                {renderInlineMarkdown(block.slice(5))}
+              </h4>
+            );
+          }
+          if (block.startsWith("### ")) {
+            return (
+              <h3
+                key={key}
+                className="text-base font-semibold tracking-tight text-ink"
+              >
+                {renderInlineMarkdown(block.slice(4))}
+              </h3>
+            );
+          }
+          if (block.startsWith("> ")) {
+            return (
+              <blockquote
+                key={key}
+                className="rounded-lg border-l-2 border-accent bg-paper px-3.5 py-2.5 text-xs text-ink-soft"
+              >
+                {renderInlineMarkdown(block.replace(/^>\s*/gm, ""))}
+              </blockquote>
+            );
+          }
+
+          const lines = block.split("\n");
+          const isList = lines.every(
+            (l) =>
+              /^\s*[-*]\s+/.test(l) ||
+              /^\s*\d+\.\s+/.test(l) ||
+              /^\s{2,}/.test(l)
+          );
+
+          if (isList) {
+            return (
+              <ul key={key} className="space-y-1.5 pl-1">
+                {lines.map((line, lIdx) => {
+                  const cleaned = line
+                    .replace(/^\s*[-*]\s+/, "")
+                    .replace(/^\s*\d+\.\s+/, "");
+                  const isSubBullet = /^\s{2,}[-*]/.test(line);
+                  return (
+                    <li
+                      key={lIdx}
+                      className={`flex items-start gap-2 text-[13px] leading-relaxed ${
+                        isSubBullet ? "pl-5 text-muted" : "text-ink-soft"
+                      }`}
+                    >
+                      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/80" />
+                      <div className="min-w-0 flex-1">
+                        {renderInlineMarkdown(cleaned)}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            );
+          }
+
+          return (
+            <p key={key} className="text-[13px] leading-relaxed text-ink-soft">
+              {renderInlineMarkdown(block)}
+            </p>
+          );
+        });
+      })}
+    </div>
+  );
+}
 
 function getCriticalityStyles(level) {
   switch (level) {
@@ -102,6 +251,18 @@ function ProjectWorkspaceContent() {
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [graphNodeLimit, setGraphNodeLimit] = useState(24);
+
+  // Ask Codebase (Section 03) Graph-Aware AST RAG states
+  const [askMessages, setAskMessages] = useState([]);
+  const [askInput, setAskInput] = useState("");
+  const [askingRag, setAskingRag] = useState(false);
+  const [ragMemory, setRagMemory] = useState({
+    pinnedFunctionIds: [],
+    pinnedFiles: [],
+    sessionDigest: "",
+  });
+  const [expandedContextIds, setExpandedContextIds] = useState({});
+  const askEndRef = useRef(null);
 
   useEffect(() => {
     let token = null;
@@ -333,6 +494,199 @@ function ProjectWorkspaceContent() {
   function openFunctionInGraph(fnId) {
     setSelectedFnId(fnId);
     setActiveSection("graph");
+  }
+
+  const starterPrompts = useMemo(() => {
+    const fns = allFunctions || [];
+    const routeOrEntry =
+      fns.find(
+        (f) =>
+          f.kind === "route-handler" ||
+          /login|auth|checkout|order|analyze|fetch|main|handle/i.test(f.name)
+      ) || fns[0];
+    const topCritical =
+      fns.find((f) => f.criticality === "CRITICAL" && f.id !== routeOrEntry?.id) ||
+      fns[1] ||
+      fns[0];
+
+    return [
+      {
+        mode: "FLOW TRACE",
+        title: routeOrEntry
+          ? `Trace execution flow of ${routeOrEntry.name}()`
+          : "Trace main execution flow",
+        prompt: routeOrEntry
+          ? `Explain the step-by-step execution flow starting from ${routeOrEntry.name}() in ${routeOrEntry.file}`
+          : `Explain the primary execution flow in this codebase`,
+      },
+      {
+        mode: "BLAST RADIUS",
+        title: topCritical
+          ? `Blast radius of ${topCritical.name}()`
+          : "Highest impact functions",
+        prompt: topCritical
+          ? `What is the blast radius and what files will be affected if we modify or remove ${topCritical.name}()?`
+          : `Which functions have the highest blast radius and criticality in this project?`,
+      },
+      {
+        mode: "ARCHITECTURE",
+        title: `Whole-project workflows & stack`,
+        prompt: `Explain the entire project architecture, tech stack, and major workflows of ${
+          analysis?.repoName || "this repository"
+        }`,
+      },
+      {
+        mode: "PROJECT REPORT",
+        title: `Generate detailed developer report`,
+        prompt: `Generate a detailed report of this entire project for a developer`,
+      },
+    ];
+  }, [allFunctions, analysis]);
+
+  async function handleAskSubmit(e, customQuestion = null, memoryOverride = null) {
+    if (e) e.preventDefault();
+    const q = String(customQuestion ?? askInput).trim();
+    if (!q || askingRag) return;
+
+    const userMsgId = `usr_${Date.now()}`;
+    const userMessage = {
+      id: userMsgId,
+      role: "user",
+      content: q,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    };
+
+    const nextHistory = [...askMessages, userMessage];
+    setAskMessages(nextHistory);
+    if (!customQuestion) setAskInput("");
+    setAskingRag(true);
+
+    setTimeout(() => {
+      askEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 60);
+
+    try {
+      const token = localStorage.getItem("archon_token") || "";
+      const activeMemory = memoryOverride || ragMemory;
+      const compactHistory = nextHistory.slice(-6).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      const res = await fetch(`${API_BASE}/api/projects/${projectId}/ask`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          question: q,
+          history: compactHistory,
+          memory: activeMemory,
+        }),
+      });
+
+      const data = await res.json();
+      const assistantMsgId = `ast_${Date.now()}`;
+
+      if (!res.ok) {
+        setAskMessages((prev) => [
+          ...prev,
+          {
+            id: assistantMsgId,
+            role: "assistant",
+            content:
+              data?.message ||
+              "Unable to process that question right now. Please try again.",
+            timestamp: new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          },
+        ]);
+      } else {
+        if (data.updatedMemory) {
+          setRagMemory(data.updatedMemory);
+        }
+        setAskMessages((prev) => [
+          ...prev,
+          {
+            id: assistantMsgId,
+            role: "assistant",
+            content: data.answer,
+            intent: data.intent,
+            redirectAction: data.redirectAction || null,
+            telemetry: data.telemetry || null,
+            retrievedFunctions: data.retrievedFunctions || [],
+            neighborStubs: data.neighborStubs || [],
+            callChain: data.callChain || [],
+            suggestedFollowUps: data.suggestedFollowUps || [],
+            timestamp: new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          },
+        ]);
+      }
+    } catch {
+      setAskMessages((prev) => [
+        ...prev,
+        {
+          id: `err_${Date.now()}`,
+          role: "assistant",
+          content:
+            "Could not reach the AST RAG backend on port 4000. Verify the server is running.",
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        },
+      ]);
+    } finally {
+      setAskingRag(false);
+      setTimeout(() => {
+        askEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      }, 100);
+    }
+  }
+
+  function askAiAboutFunction(fn) {
+    if (!fn) return;
+    const nextMemory = {
+      ...ragMemory,
+      pinnedFunctionIds: Array.from(
+        new Set([fn.id, ...(ragMemory.pinnedFunctionIds || [])])
+      ).slice(0, 6),
+      pinnedFiles: Array.from(
+        new Set([fn.file, ...(ragMemory.pinnedFiles || [])])
+      ).slice(0, 5),
+    };
+    setRagMemory(nextMemory);
+    setActiveSection("ask");
+    handleAskSubmit(
+      null,
+      `Explain how ${fn.name}() works in ${fn.file}, its execution flow, and its blast radius if changed.`,
+      nextMemory
+    );
+  }
+
+  function toggleContextDrawer(msgId) {
+    setExpandedContextIds((prev) => ({
+      ...prev,
+      [msgId]: !prev[msgId],
+    }));
+  }
+
+  function removePinnedFunction(fnId) {
+    setRagMemory((prev) => ({
+      ...prev,
+      pinnedFunctionIds: (prev.pinnedFunctionIds || []).filter(
+        (id) => id !== fnId
+      ),
+    }));
   }
 
   function handleCanvasMouseDown(e) {
@@ -1182,6 +1536,14 @@ function ProjectWorkspaceContent() {
                           {selectedFunction.endLine}
                         </span>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => askAiAboutFunction(selectedFunction)}
+                        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-ink px-3 py-2 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft"
+                      >
+                        <span>Ask AI about {selectedFunction.name}()</span>
+                        <span aria-hidden="true">→</span>
+                      </button>
                     </div>
 
                     {/* Scrollable Inspector Body */}
@@ -1690,101 +2052,490 @@ function ProjectWorkspaceContent() {
         )}
 
         {/* ========================================================= */}
-        {/* SECTION 3: ASK CODEBASE (COMING SOON STATE)               */}
+        {/* SECTION 3: ASK CODEBASE (GRAPH-AWARE AST RAG WORKSPACE)   */}
         {/* ========================================================= */}
         {activeSection === "ask" && (
-          <main className="mx-auto w-full max-w-4xl p-8 md:py-14">
-            <div className="rounded-2xl border border-line-strong bg-surface p-8 md:p-10">
-              <div className="inline-flex items-center gap-2 rounded-full border border-line-strong bg-sunken px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
-                <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                Section 03 · Coming Soon
-              </div>
-
-              <h1 className="mt-4 text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
-                Ask Any Question About {analysis.fullName}
-              </h1>
-              <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
-                Graph-aware natural language codebase assistant is scheduled for
-                the next phase. Once activated, you will be able to query the AST
-                call graph directly to trace execution paths, inspect why
-                specific dependencies are imported, and clarify complex
-                workflows across all {analysis.fileCount} files.
-              </p>
-
-              {/* Preview of Capabilities */}
-              <div className="mt-8 grid gap-4 sm:grid-cols-3">
-                <div className="rounded-xl border border-line bg-paper p-4">
-                  <div className="font-mono text-[10px] uppercase tracking-wider text-accent">
-                    01 · Function Tracing
+          <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col p-6 md:p-8">
+            {/* Top RAG Intelligence & Memory Status Bar */}
+            <div className="rounded-xl border border-line-strong bg-surface p-5">
+              <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+                <div>
+                  <div className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                    Section 03 · Graph-Aware AST RAG · Groq LPU
                   </div>
-                  <div className="mt-1.5 text-sm font-semibold text-ink">
-                    Trace Execution Paths
-                  </div>
+                  <h1 className="mt-1 text-xl font-semibold tracking-tight text-ink sm:text-2xl">
+                    Ask {analysis.fullName}
+                  </h1>
                   <p className="mt-1 text-xs leading-relaxed text-muted">
-                    Follow how data flows from entry routes through middleware
-                    and database transactions step by step.
+                    Archon never dumps all {analysis.fileCount} files into the
+                    prompt. It searches the AST call graph, retrieves only the
+                    relevant functions and 1-hop neighbors needed for your
+                    question, and remembers active symbols across follow-ups.
                   </p>
                 </div>
 
-                <div className="rounded-xl border border-line bg-paper p-4">
-                  <div className="font-mono text-[10px] uppercase tracking-wider text-accent">
-                    02 · Dependency Context
+                {/* Live Session Token Telemetry Summary */}
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="rounded-lg border border-line bg-paper px-3.5 py-2 text-right font-mono">
+                    <div className="text-[10px] uppercase tracking-wider text-muted">
+                      Indexed AST Scope
+                    </div>
+                    <div className="mt-0.5 text-xs font-semibold text-ink">
+                      {analysis.functionCount} fns · {analysis.fileCount} files
+                    </div>
                   </div>
-                  <div className="mt-1.5 text-sm font-semibold text-ink">
-                    Understand Dependencies
-                  </div>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">
-                    Ask why any package or internal module is used and which
-                    functions rely on it.
-                  </p>
-                </div>
 
-                <div className="rounded-xl border border-line bg-paper p-4">
-                  <div className="font-mono text-[10px] uppercase tracking-wider text-accent">
-                    03 · Workflow Clarification
-                  </div>
-                  <div className="mt-1.5 text-sm font-semibold text-ink">
-                    Explain Unfamiliar Code
-                  </div>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">
-                    Get plain-English explanations grounded in your live AST
-                    graph rather than generic keyword search.
-                  </p>
-                </div>
-              </div>
+                  {askMessages.some((m) => m.telemetry) && (
+                    <div className="rounded-lg border border-[#c8502a]/40 bg-[#fbeae4]/40 px-3.5 py-2 text-right font-mono">
+                      <div className="text-[10px] uppercase tracking-wider text-accent">
+                        Avg Token Savings
+                      </div>
+                      <div className="mt-0.5 text-xs font-semibold text-accent">
+                        {(() => {
+                          const withTel = askMessages.filter(
+                            (m) => m.telemetry?.tokensSavedPercent
+                          );
+                          if (!withTel.length) return "92%";
+                          const avg =
+                            withTel.reduce(
+                              (acc, m) => acc + m.telemetry.tokensSavedPercent,
+                              0
+                            ) / withTel.length;
+                          return `${avg.toFixed(1)}% saved`;
+                        })()}
+                      </div>
+                    </div>
+                  )}
 
-              {/* Disabled Preview Prompt Box */}
-              <div className="mt-8 rounded-xl border border-line bg-sunken p-5">
-                <div className="font-mono text-[11px] uppercase tracking-wider text-muted">
-                  Example Graph-Aware Queries (Preview)
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {[
-                    `Trace the full execution flow of ${
-                      allFunctions[0]?.name || "main"
-                    }() across files`,
-                    "Which functions break if we refactor the database transaction helper?",
-                    "Explain how authentication and session verification work in this repo",
-                  ].map((q) => (
-                    <span
-                      key={q}
-                      className="rounded-md border border-line bg-surface px-3 py-1.5 font-mono text-xs text-ink-soft"
+                  {askMessages.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAskMessages([]);
+                        setRagMemory({
+                          pinnedFunctionIds: [],
+                          pinnedFiles: [],
+                          sessionDigest: "",
+                        });
+                        setExpandedContextIds({});
+                      }}
+                      className="rounded-md border border-line-strong bg-paper px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-ink hover:text-ink"
                     >
-                      “{q}”
-                    </span>
-                  ))}
-                </div>
-
-                <div className="mt-4 flex items-center justify-between rounded-lg border border-line-strong bg-paper px-4 py-3 text-xs text-faint">
-                  <span className="font-mono">
-                    Ask anything about {analysis.fullName} functions,
-                    dependencies, or workflows…
-                  </span>
-                  <span className="rounded bg-sunken px-2.5 py-1 font-mono text-[10px] uppercase text-muted">
-                    Coming Soon
-                  </span>
+                      Clear chat
+                    </button>
+                  )}
                 </div>
               </div>
+
+                  {/* Active Conversational Memory Bar (Pinned AST Symbols) */}
+              {ragMemory.pinnedFunctionIds?.length > 0 && (
+                <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                    Pinned in RAG Memory:
+                  </span>
+                  {ragMemory.pinnedFunctionIds.map((fnId) => {
+                    const fnObj = allFunctions.find((f) => f.id === fnId);
+                    const shortLabel = fnObj
+                      ? `${fnObj.name}()`
+                      : `${fnId.split("::").pop()}()`;
+                    return (
+                      <span
+                        key={fnId}
+                        className="inline-flex items-center gap-1.5 rounded border border-line-strong bg-paper px-2.5 py-1 font-mono text-[11px] text-ink"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => openFunctionInGraph(fnId)}
+                          className="hover:text-accent"
+                          title="Inspect function in Graph Explorer"
+                        >
+                          {shortLabel}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removePinnedFunction(fnId)}
+                          className="text-faint hover:text-accent"
+                          aria-label={`Unpin ${shortLabel}`}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Conversation Thread or Empty Starter State */}
+            <div className="mt-5 flex flex-1 flex-col justify-between rounded-xl border border-line-strong bg-surface">
+              <div className="flex-1 space-y-6 overflow-y-auto p-6">
+                {askMessages.length === 0 ? (
+                  <div className="py-4">
+                    <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
+                      Try an AST-Grounded Query on {analysis.fullName}
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      {starterPrompts.map((item) => (
+                        <button
+                          key={item.title}
+                          type="button"
+                          disabled={askingRag}
+                          onClick={() => handleAskSubmit(null, item.prompt)}
+                          className="group flex flex-col justify-between rounded-xl border border-line bg-paper p-4 text-left transition-all hover:border-ink hover:bg-surface"
+                        >
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+                                {item.mode}
+                              </span>
+                              <span className="font-mono text-xs text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-ink">
+                                →
+                              </span>
+                            </div>
+                            <div className="mt-2 font-mono text-xs font-semibold text-ink">
+                              {item.title}
+                            </div>
+                            <p className="mt-1 text-xs leading-relaxed text-muted">
+                              “{item.prompt}”
+                            </p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* How AST RAG Works Explainer Strip */}
+                    <div className="mt-6 rounded-xl border border-line bg-sunken/70 p-4">
+                      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-soft">
+                        4-Stage RAG Pipeline (Stop-Words → SLM Router → Groq LLM)
+                      </div>
+                      <div className="mt-2.5 grid gap-3 text-xs text-muted sm:grid-cols-3">
+                        <div>
+                          <strong className="font-mono text-[11px] text-ink">
+                            01 · Stop-Word & Keyword Filter
+                          </strong>
+                          <p className="mt-0.5 leading-relaxed">
+                            Strips stop words from your question and matches
+                            keywords against AST function names, file paths, and
+                            call-graph neighbors.
+                          </p>
+                        </div>
+                        <div>
+                          <strong className="font-mono text-[11px] text-ink">
+                            02 · SLM Fallback Router
+                          </strong>
+                          <p className="mt-0.5 leading-relaxed">
+                            If keywords don&apos;t match directly, a fast Groq
+                            SLM (<code className="font-mono">gpt-oss-20b</code>
+                            ) identifies which files and functions are linked to
+                            your question.
+                          </p>
+                        </div>
+                        <div>
+                          <strong className="font-mono text-[11px] text-ink">
+                            03 · LLM Answer & Report Guard
+                          </strong>
+                          <p className="mt-0.5 leading-relaxed">
+                            Sends only the linked functions to Groq LLM (
+                            <code className="font-mono">gpt-oss-120b</code>)
+                            for a clear explanation—or redirects whole-project
+                            report requests to Section 04.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  askMessages.map((msg) => {
+                    if (msg.role === "user") {
+                      return (
+                        <div key={msg.id} className="flex justify-end">
+                          <div className="max-w-2xl rounded-xl border border-ink bg-ink px-4 py-3 text-paper">
+                            <div className="flex items-center justify-between gap-4 font-mono text-[10px] text-paper/70">
+                              <span>YOU</span>
+                              <span>{msg.timestamp}</span>
+                            </div>
+                            <p className="mt-1 text-sm leading-relaxed">
+                              {msg.content}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    const isContextOpen = Boolean(expandedContextIds[msg.id]);
+
+                    return (
+                      <div
+                        key={msg.id}
+                        className="rounded-xl border border-line-strong bg-paper p-5"
+                      >
+                        {/* Top Telemetry & Mode Badge Bar */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center gap-1.5 rounded bg-ink px-2.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-paper">
+                              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                              ARCHON RAG
+                            </span>
+                            {msg.telemetry && (
+                              <>
+                                <span className="rounded border border-line-strong bg-surface px-2 py-0.5 font-mono text-[10px] uppercase text-ink-soft">
+                                  {msg.telemetry.intentLabel || msg.intent}
+                                </span>
+                                <span className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10px] text-muted">
+                                  {msg.telemetry.functionsRetrieved} AST fns ·{" "}
+                                  {msg.telemetry.neighborStubsCount || 0} stubs
+                                </span>
+                                <span className="rounded border border-[#c8502a]/40 bg-[#fbeae4]/50 px-2 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                                  {msg.telemetry.tokensSent.toLocaleString()}{" "}
+                                  tokens sent ·{" "}
+                                  {msg.telemetry.tokensSavedPercent}% saved
+                                </span>
+                              </>
+                            )}
+                          </div>
+
+                          {msg.telemetry &&
+                            (msg.retrievedFunctions?.length > 0 ||
+                              msg.neighborStubs?.length > 0) && (
+                              <button
+                                type="button"
+                                onClick={() => toggleContextDrawer(msg.id)}
+                                className="rounded border border-line-strong bg-surface px-2.5 py-1 font-mono text-[10px] font-medium text-ink transition-colors hover:border-ink hover:text-accent"
+                              >
+                                {isContextOpen
+                                  ? "Hide AST Context ▲"
+                                  : `Inspect Retrieved AST (${
+                                      msg.retrievedFunctions?.length || 0
+                                    }) ▼`}
+                              </button>
+                            )}
+                        </div>
+
+                        {/* Collapsible X-Ray Drawer: Which exact AST functions were sent to the LLM */}
+                        <AnimatePresence>
+                          {isContextOpen && msg.telemetry && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: "auto" }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className="mt-3 overflow-hidden rounded-lg border border-line-strong bg-surface p-4"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]">
+                                <span className="font-semibold uppercase tracking-wider text-ink">
+                                  RAG Context X-Ray · Sent{" "}
+                                  {msg.telemetry.tokensSent.toLocaleString()}{" "}
+                                  tokens instead of{" "}
+                                  {msg.telemetry.fullRepoTokens.toLocaleString()}{" "}
+                                  full-repo tokens
+                                </span>
+                                <span className="text-muted">
+                                  Engine: {msg.telemetry.engine}
+                                </span>
+                              </div>
+
+                              {msg.retrievedFunctions?.length > 0 && (
+                                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                  {msg.retrievedFunctions.map((fn) => (
+                                    <div
+                                      key={fn.id}
+                                      className="flex items-start justify-between gap-2 rounded-lg border border-line bg-paper p-2.5 font-mono text-xs"
+                                    >
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="truncate font-semibold text-ink">
+                                            {fn.name}()
+                                          </span>
+                                          <span className="rounded bg-sunken px-1.5 py-0.5 text-[9px] text-accent">
+                                            {fn.criticality}
+                                          </span>
+                                        </div>
+                                        <div className="mt-0.5 truncate text-[10px] text-muted">
+                                          {fn.file}:L{fn.startLine}–L{fn.endLine}{" "}
+                                          ({fn.lineCount}L ·{" "}
+                                          {fn.blastRadiusPercent}% blast)
+                                        </div>
+                                        {fn.matchReasons?.length > 0 && (
+                                          <div className="mt-1 truncate text-[10px] text-ink-soft">
+                                            Matched:{" "}
+                                            {fn.matchReasons.join(" · ")}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => openFunctionInGraph(fn.id)}
+                                        className="shrink-0 rounded border border-line-strong bg-surface px-2 py-1 text-[10px] text-ink hover:border-ink hover:text-accent"
+                                      >
+                                        Graph →
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {msg.neighborStubs?.length > 0 && (
+                                <div className="mt-3 border-t border-line pt-2.5">
+                                  <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                                    1-Hop Connected Neighbor Stubs (Signature
+                                    Only):
+                                  </div>
+                                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                    {msg.neighborStubs.map((nb) => (
+                                      <button
+                                        key={nb.id}
+                                        type="button"
+                                        onClick={() => openFunctionInGraph(nb.id)}
+                                        className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[10px] text-ink-soft hover:border-ink hover:text-accent"
+                                      >
+                                        {nb.name}() · {nb.relation}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+
+                        {/* Interactive Call-Chain Stepper Strip */}
+                        {msg.callChain?.length > 1 && (
+                          <div className="mt-3 rounded-lg border border-line bg-surface p-3">
+                            <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-muted">
+                              <span>
+                                Traced AST Execution Path (Click any node to
+                                open in Graph Explorer)
+                              </span>
+                              <span>{msg.callChain.length} steps</span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                              {msg.callChain.map((step, idx) => (
+                                <div
+                                  key={`${step.id}-${idx}`}
+                                  className="flex items-center gap-1.5"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => openFunctionInGraph(step.id)}
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-paper px-2.5 py-1 font-mono text-xs text-ink transition-colors hover:border-accent hover:text-accent"
+                                  >
+                                    <span className="text-[10px] font-semibold text-accent">
+                                      {idx + 1}
+                                    </span>
+                                    <span className="font-medium">
+                                      {step.name}()
+                                    </span>
+                                    <span className="text-[10px] text-muted">
+                                      {step.file.split("/").pop()}
+                                    </span>
+                                  </button>
+                                  {idx < msg.callChain.length - 1 && (
+                                    <span className="font-mono text-xs text-muted">
+                                      →
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Rendered Markdown Answer Body */}
+                        <div className="mt-4">
+                          <RagMarkdownContent content={msg.content} />
+                        </div>
+
+                        {/* Special One-Click Redirect Card when user asks for Detailed / Full Project Report */}
+                        {msg.redirectAction && (
+                          <div className="mt-4 flex flex-col items-start justify-between gap-4 rounded-xl border border-[#c8502a] bg-[#fbeae4]/45 p-4 sm:flex-row sm:items-center">
+                            <div>
+                              <div className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+                                Dedicated Reporting Module · Section 04
+                              </div>
+                              <div className="mt-0.5 text-sm font-semibold text-ink">
+                                {msg.redirectAction.description}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setActiveSection(
+                                  msg.redirectAction.targetSection || "reports"
+                                )
+                              }
+                              className="inline-flex shrink-0 items-center gap-2 rounded-md bg-ink px-4 py-2.5 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft"
+                            >
+                              {msg.redirectAction.buttonLabel}
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Suggested Contextual Follow-Up Chips */}
+                        {msg.suggestedFollowUps?.length > 0 && (
+                          <div className="mt-4 border-t border-line pt-3">
+                            <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                              Continue Tracing (Uses Pinned Memory):
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {msg.suggestedFollowUps.map((followUp) => (
+                                <button
+                                  key={followUp}
+                                  type="button"
+                                  disabled={askingRag}
+                                  onClick={() =>
+                                    handleAskSubmit(null, followUp)
+                                  }
+                                  className="rounded-md border border-line-strong bg-surface px-3 py-1.5 font-mono text-xs text-ink-soft transition-colors hover:border-ink hover:text-accent disabled:opacity-50"
+                                >
+                                  {followUp} →
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+
+                {askingRag && (
+                  <div className="rounded-xl border border-line bg-paper p-5">
+                    <div className="flex items-center gap-3 font-mono text-xs text-ink">
+                      <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
+                      <span>
+                        Traversing AST call graph & retrieving minimal function
+                        slices…
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div ref={askEndRef} />
+              </div>
+
+              {/* Bottom Prompt Input Form */}
+              <form
+                onSubmit={(e) => handleAskSubmit(e)}
+                className="border-t border-line bg-paper p-4"
+              >
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <input
+                    type="text"
+                    value={askInput}
+                    onChange={(e) => setAskInput(e.target.value)}
+                    disabled={askingRag}
+                    placeholder={`Ask about any function, execution flow, dependency, or blast radius in ${analysis.fullName}…`}
+                    className="h-11 flex-1 rounded-md border border-line-strong bg-surface px-4 font-mono text-xs text-ink placeholder:text-faint focus:border-ink focus:outline-none disabled:opacity-60"
+                  />
+                  <button
+                    type="submit"
+                    disabled={askingRag || !askInput.trim()}
+                    className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-ink px-5 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft disabled:opacity-50"
+                  >
+                    {askingRag ? "Querying AST…" : "Ask Codebase →"}
+                  </button>
+                </div>
+              </form>
             </div>
           </main>
         )}

@@ -3,13 +3,21 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
-const { prisma } = require("../lib/prisma");
+const {
+  prisma,
+  withFastTimeout,
+  readFallbackProjects,
+  writeFallbackProjects,
+  syncProjectToLocalMirror,
+} = require("../lib/prisma");
 const {
   buildRepositoryAnalysis,
   CODE_EXTENSIONS,
   getExtension,
 } = require("../lib/astEngine");
+const { answerCodebaseQuestion } = require("../lib/codebaseRag");
 
 const router = express.Router();
 const JWT_SECRET =
@@ -553,10 +561,17 @@ function extractDescriptionFromReadme(readmeText) {
         !l.startsWith("<") &&
         !l.startsWith("```") &&
         !l.startsWith("---") &&
+        !l.startsWith("|") &&
         l.length > 20
     );
   if (!lines.length) return "";
-  const first = lines[0].replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  const first = lines[0]
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^>\s*/, "")
+    .trim();
   return first.length > 200 ? first.slice(0, 197) + "..." : first;
 }
 
@@ -759,8 +774,17 @@ async function fetchGithubRepositoryFiles(owner, repo) {
 // GET /api/projects — List all projects for current user
 router.get("/", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate");
-  try {
-    const projects = await prisma.repository.findMany({
+  const localUserProjects = readFallbackProjects()
+    .filter((p) => p.userId === req.user.id)
+    .sort(
+      (a, b) =>
+        new Date(b.updatedAt || 0).getTime() -
+        new Date(a.updatedAt || 0).getTime()
+    )
+    .map(({ analysisData, ...summary }) => summary);
+
+  const runDbFetch = async () =>
+    await prisma.repository.findMany({
       where: { userId: req.user.id },
       orderBy: { updatedAt: "desc" },
       select: {
@@ -782,18 +806,43 @@ router.get("/", requireAuth, async (req, res) => {
         lastIndexedAt: true,
         createdAt: true,
         updatedAt: true,
+        userId: true,
       },
     });
+
+  if (localUserProjects.length > 0) {
+    setImmediate(() => {
+      runDbFetch()
+        .then((list) => {
+          for (const p of list || []) syncProjectToLocalMirror(p);
+        })
+        .catch(() => {});
+    });
+    return res.status(200).json({
+      status: "OK",
+      projects: localUserProjects,
+    });
+  }
+
+  try {
+    const projects = await withFastTimeout(runDbFetch, 2500);
+
+    for (const p of projects) {
+      syncProjectToLocalMirror(p);
+    }
 
     return res.status(200).json({
       status: "OK",
       projects,
     });
   } catch (err) {
-    console.error("[GET /api/projects ERROR]:", err);
-    return res.status(500).json({
-      error: "DATABASE_ERROR",
-      message: "Unable to load your projects right now.",
+    console.warn(
+      "[GET /api/projects — NeonDB slow/unreachable, serving from local mirror]:",
+      err.message
+    );
+    return res.status(200).json({
+      status: "OK",
+      projects: localUserProjects,
     });
   }
 });
@@ -801,27 +850,45 @@ router.get("/", requireAuth, async (req, res) => {
 // GET /api/projects/:id — Fetch single project with full AST analysisData
 router.get("/:id", requireAuth, async (req, res) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+  const localMatch = readFallbackProjects().find(
+    (p) => p.id === req.params.id && p.userId === req.user.id
+  );
+  if (localMatch && localMatch.analysisData) {
+    return res.status(200).json({ status: "OK", project: localMatch });
+  }
+
   try {
-    const project = await prisma.repository.findFirst({
+    const dbQuery = prisma.repository.findFirst({
       where: {
         id: req.params.id,
         userId: req.user.id,
       },
     });
+    const project = await withFastTimeout(dbQuery, 5000);
 
     if (!project) {
+      if (localMatch) {
+        return res.status(200).json({ status: "OK", project: localMatch });
+      }
       return res.status(404).json({
         error: "PROJECT_NOT_FOUND",
         message: "Project not found in your workspace.",
       });
     }
 
+    syncProjectToLocalMirror(project);
     return res.status(200).json({
       status: "OK",
       project,
     });
   } catch (err) {
-    console.error("[GET /api/projects/:id ERROR]:", err);
+    console.warn(
+      "[GET /api/projects/:id — NeonDB slow/unreachable, checking local mirror]:",
+      err.message
+    );
+    if (localMatch) {
+      return res.status(200).json({ status: "OK", project: localMatch });
+    }
     return res.status(500).json({
       error: "DATABASE_ERROR",
       message: "Unable to load project analysis.",
@@ -888,31 +955,67 @@ router.post("/analyze", requireAuth, async (req, res) => {
       lastIndexedAt: new Date(),
     };
 
-    // Upsert for this user + fullName so re-analyzing updates cleanly instead of leaving stale duplicates
-    const existingProject = await prisma.repository.findFirst({
-      where: {
-        userId: req.user.id,
-        fullName: {
-          equals: analysis.fullName,
-          mode: "insensitive",
-        },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
-
     let savedProject;
-    if (existingProject) {
-      savedProject = await prisma.repository.update({
-        where: { id: existingProject.id },
-        data: projectPayload,
-      });
-    } else {
-      savedProject = await prisma.repository.create({
-        data: {
-          ...projectPayload,
-          userId: req.user.id,
-        },
-      });
+    try {
+      const upsertTask = (async () => {
+        const existingProject = await prisma.repository.findFirst({
+          where: {
+            userId: req.user.id,
+            fullName: {
+              equals: analysis.fullName,
+              mode: "insensitive",
+            },
+          },
+          orderBy: { updatedAt: "desc" },
+        });
+
+        if (existingProject) {
+          return await prisma.repository.update({
+            where: { id: existingProject.id },
+            data: projectPayload,
+          });
+        }
+        return await prisma.repository.create({
+          data: {
+            ...projectPayload,
+            userId: req.user.id,
+          },
+        });
+      })();
+
+      upsertTask
+        .then((p) => {
+          if (p) syncProjectToLocalMirror(p);
+        })
+        .catch(() => {});
+
+      savedProject = await withFastTimeout(upsertTask, 4500);
+      syncProjectToLocalMirror(savedProject);
+    } catch (dbErr) {
+      console.warn(
+        "[POST /api/projects/analyze — NeonDB unreachable, persisting to local mirror]:",
+        dbErr.message
+      );
+      const localList = readFallbackProjects();
+      const existingIdx = localList.findIndex(
+        (p) =>
+          p.userId === req.user.id &&
+          p.fullName?.toLowerCase() === analysis.fullName.toLowerCase()
+      );
+      const nowIso = new Date().toISOString();
+      savedProject = {
+        id:
+          existingIdx >= 0
+            ? localList[existingIdx].id
+            : "prj_" + crypto.randomBytes(10).toString("hex"),
+        ...projectPayload,
+        lastIndexedAt: nowIso,
+        userId: req.user.id,
+        createdAt:
+          existingIdx >= 0 ? localList[existingIdx].createdAt : nowIso,
+        updatedAt: nowIso,
+      };
+      syncProjectToLocalMirror(savedProject);
     }
 
     return res.status(201).json({
@@ -930,28 +1033,107 @@ router.post("/analyze", requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/projects/:id/ask — Graph-Aware AST RAG & Conversational Q&A (Section 03)
+router.post("/:id/ask", requireAuth, async (req, res) => {
+  try {
+    const { question, history = [], memory = {} } = req.body || {};
+    if (!question || !String(question).trim()) {
+      return res.status(400).json({
+        error: "MISSING_QUESTION",
+        message: "Please enter a question about the codebase.",
+      });
+    }
+
+    // Load project from local mirror first for < 5ms latency, fallback to NeonDB
+    let project = readFallbackProjects().find(
+      (p) => p.id === req.params.id && p.userId === req.user.id
+    );
+
+    if (!project || !project.analysisData) {
+      try {
+        project = await withFastTimeout(
+          () =>
+            prisma.repository.findFirst({
+              where: { id: req.params.id, userId: req.user.id },
+            }),
+          4500
+        );
+        if (project) syncProjectToLocalMirror(project);
+      } catch {
+        // keep local project if any
+      }
+    }
+
+    if (!project) {
+      return res.status(404).json({
+        error: "PROJECT_NOT_FOUND",
+        message: "Project not found in your workspace.",
+      });
+    }
+
+    const analysis = project.analysisData || {
+      repoName: project.name,
+      fullName: project.fullName,
+      repoUrl: project.repoUrl,
+      description: project.description,
+      defaultBranch: project.defaultBranch || "main",
+      primaryLanguage: project.primaryLanguage || "TypeScript",
+      fileCount: project.fileCount || 0,
+      functionCount: project.functionCount || 0,
+      packageCount: project.packageCount || 0,
+      dependencyCount: project.dependencyCount || 0,
+      totalLines: project.totalLines || 0,
+      astNodeCount: project.astNodeCount || 0,
+      healthScore: project.healthScore || 90,
+      languages: [],
+      packages: [],
+      files: [],
+      functions: [],
+      functionEdges: [],
+    };
+
+    const result = await answerCodebaseQuestion({
+      analysis,
+      question: String(question).trim(),
+      history: Array.isArray(history) ? history : [],
+      memory: memory || {},
+    });
+
+    return res.status(200).json({
+      status: "OK",
+      ...result,
+    });
+  } catch (err) {
+    console.error("[POST /api/projects/:id/ask ERROR]:", err);
+    return res.status(500).json({
+      error: "RAG_QUERY_FAILED",
+      message: "Failed to process codebase query. Please try again.",
+    });
+  }
+});
+
 // DELETE /api/projects/:id — Remove a project
 router.delete("/:id", requireAuth, async (req, res) => {
   try {
+    const localFiltered = readFallbackProjects().filter(
+      (p) => !(p.id === req.params.id && p.userId === req.user.id)
+    );
+    writeFallbackProjects(localFiltered);
+
     const existing = await prisma.repository.findFirst({
       where: { id: req.params.id, userId: req.user.id },
     });
 
-    if (!existing) {
-      return res.status(404).json({
-        error: "NOT_FOUND",
-        message: "Project not found.",
-      });
+    if (existing) {
+      await prisma.repository.delete({ where: { id: existing.id } });
     }
-
-    await prisma.repository.delete({ where: { id: existing.id } });
-    return res.status(200).json({ status: "DELETED", id: existing.id });
+    return res.status(200).json({ status: "DELETED", id: req.params.id });
   } catch (err) {
-    console.error("[DELETE /api/projects/:id ERROR]:", err);
-    return res.status(500).json({
-      error: "DELETE_FAILED",
-      message: "Unable to delete project.",
-    });
+    console.warn(
+      "[DELETE /api/projects/:id — removed from local mirror]:",
+      err.message
+    );
+    return res.status(200).json({ status: "DELETED", id: req.params.id });
   }
 });
 

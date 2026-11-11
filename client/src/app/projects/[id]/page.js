@@ -45,42 +45,226 @@ const NAV_ITEMS = [
 function renderInlineMarkdown(text) {
   if (!text) return null;
   const cleaned = String(text).replace(/<br\s*\/?>/gi, " · ");
-  const tokens = cleaned.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  // Match inline code (`...`), bold (**...**), or single-asterisk italic (*...*)
+  const tokenRegex = /(`[^`\n]+`|\*\*[^*\n]+\*\*|(?<!\*)\*[^*\n]+\*(?!\*))/g;
+  const tokens = cleaned.split(tokenRegex);
+
   return tokens.map((part, idx) => {
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
-      return (
-        <strong key={idx} className="font-semibold text-ink">
-          {part.slice(2, -2)}
-        </strong>
-      );
-    }
+    if (!part) return null;
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
       return (
         <code
           key={idx}
-          className="rounded border border-line bg-sunken px-1.5 py-0.5 font-mono text-[11px] font-medium text-ink"
+          className="mx-0.5 rounded border border-line-strong bg-sunken px-1.5 py-0.5 font-mono text-[11.5px] font-medium text-ink"
         >
           {part.slice(1, -1)}
         </code>
+      );
+    }
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return (
+        <strong key={idx} className="font-semibold text-ink">
+          {renderInlineMarkdown(part.slice(2, -2))}
+        </strong>
+      );
+    }
+    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
+      return (
+        <em key={idx} className="italic text-ink">
+          {part.slice(1, -1)}
+        </em>
       );
     }
     return <span key={idx}>{part}</span>;
   });
 }
 
-function RagMarkdownContent({ content }) {
+function parseMarkdownTableRow(rowText) {
+  const trimmed = rowText.trim();
+  const withoutOuterPipes = trimmed
+    .replace(/^\|/, "")
+    .replace(/\|$/, "");
+  return withoutOuterPipes.split("|").map((cell) => cell.trim());
+}
+
+function isMarkdownTableSeparator(rowText) {
+  const trimmed = rowText.trim();
+  if (!trimmed.includes("|") || !trimmed.includes("-")) return false;
+  return /^\|?[\s:|-]+\|[\s:|-]*$/.test(trimmed);
+}
+
+function parseNonCodeMarkdownBlocks(segment) {
+  const rawLines = String(segment || "").split("\n");
+  const blocks = [];
+  let i = 0;
+
+  while (i < rawLines.length) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      i += 1;
+      continue;
+    }
+
+    // 1. Horizontal Rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({ type: "hr" });
+      i += 1;
+      continue;
+    }
+
+    // 2. Headings (# to #####)
+    const headingMatch = trimmed.match(/^(#{1,5})\s+(.*)$/);
+    if (headingMatch) {
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length,
+        text: headingMatch[2].trim(),
+      });
+      i += 1;
+      continue;
+    }
+
+    // 3. Markdown Table (consecutive lines containing pipes where a separator row exists or starts/ends with |)
+    if (
+      trimmed.startsWith("|") &&
+      trimmed.endsWith("|") &&
+      trimmed.split("|").length >= 3
+    ) {
+      const tableLines = [];
+      while (
+        i < rawLines.length &&
+        rawLines[i].trim().startsWith("|") &&
+        rawLines[i].trim().includes("|")
+      ) {
+        tableLines.push(rawLines[i].trim());
+        i += 1;
+      }
+      if (tableLines.length >= 2) {
+        const headerCells = parseMarkdownTableRow(tableLines[0]);
+        const dataRows = tableLines
+          .slice(1)
+          .filter((r) => !isMarkdownTableSeparator(r))
+          .map(parseMarkdownTableRow);
+        blocks.push({
+          type: "table",
+          headers: headerCells,
+          rows: dataRows,
+        });
+        continue;
+      } else {
+        // Fallback if single pipe line
+        blocks.push({
+          type: "paragraph",
+          text: tableLines.join(" "),
+        });
+        continue;
+      }
+    }
+
+    // 4. Blockquote (> ...)
+    if (trimmed.startsWith(">")) {
+      const quoteLines = [];
+      while (i < rawLines.length && rawLines[i].trim().startsWith(">")) {
+        quoteLines.push(rawLines[i].trim().replace(/^>\s?/, ""));
+        i += 1;
+      }
+      blocks.push({
+        type: "blockquote",
+        text: quoteLines.join("\n"),
+      });
+      continue;
+    }
+
+    // 5. Ordered or Unordered Lists
+    if (/^\s*(?:[-*•]|\d+\.)\s+/.test(line)) {
+      const items = [];
+      while (
+        i < rawLines.length &&
+        rawLines[i].trim() !== "" &&
+        (/^\s*(?:[-*•]|\d+\.)\s+/.test(rawLines[i]) ||
+          /^\s{2,}\S/.test(rawLines[i]))
+      ) {
+        const currentLine = rawLines[i];
+        const bulletMatch = currentLine.match(/^(\s*)(?:([-*•])|(\d+)\.)\s+(.*)$/);
+        if (bulletMatch) {
+          const indent = bulletMatch[1]?.length || 0;
+          const orderedNum = bulletMatch[3] || null;
+          items.push({
+            indentLevel: indent >= 2 ? 1 : 0,
+            orderedNum,
+            text: bulletMatch[4].trim(),
+          });
+        } else if (items.length > 0) {
+          // Continuation of previous list item
+          items[items.length - 1].text += ` ${currentLine.trim()}`;
+        }
+        i += 1;
+      }
+      blocks.push({
+        type: "list",
+        items,
+      });
+      continue;
+    }
+
+    // 6. Standard Paragraph (collect consecutive plain lines)
+    const paraLines = [];
+    while (
+      i < rawLines.length &&
+      rawLines[i].trim() !== "" &&
+      !/^(#{1,5})\s+/.test(rawLines[i].trim()) &&
+      !/^(-{3,}|\*{3,}|_{3,})$/.test(rawLines[i].trim()) &&
+      !rawLines[i].trim().startsWith(">") &&
+      !(
+        rawLines[i].trim().startsWith("|") &&
+        rawLines[i].trim().endsWith("|") &&
+        rawLines[i].trim().split("|").length >= 3
+      ) &&
+      !/^\s*(?:[-*•]|\d+\.)\s+/.test(rawLines[i])
+    ) {
+      paraLines.push(rawLines[i].trim());
+      i += 1;
+    }
+
+    if (paraLines.length > 0) {
+      blocks.push({
+        type: "paragraph",
+        text: paraLines.join(" "),
+      });
+    } else {
+      i += 1;
+    }
+  }
+
+  return blocks;
+}
+
+function RagMarkdownContent({ content, isStreaming = false }) {
   if (!content) return null;
-  const segments = String(content).split(/(```[\s\S]*?```)/g);
+
+  // Normalize inline pipe-collapsed tables if the model emitted "| col | col | |---|---|" on a single line
+  const normalizedContent = String(content)
+    .replace(/\|\s*\|\s*(?=[-:]+\|)/g, "|\n|")
+    .replace(/(\|\s*[-:]+\s*\|\s*[-:|\s]*\|)\s*\|/g, "$1\n|");
+
+  // Split closed code blocks and also support an unclosed trailing code block during live streaming
+  const segments = normalizedContent.split(/(```[\s\S]*?```|```[\s\S]*$)/g);
 
   return (
-    <div className="space-y-3 text-sm leading-relaxed text-ink-soft">
+    <div className="space-y-3 text-[13.5px] leading-[1.7] text-ink-soft">
       {segments.map((segment, segIdx) => {
-        if (segment.startsWith("```") && segment.endsWith("```")) {
-          const lines = segment.slice(3, -3).trim().split("\n");
+        if (!segment) return null;
+
+        if (segment.startsWith("```")) {
+          const isClosed = segment.endsWith("```") && segment.length >= 6;
+          const rawInner = isClosed ? segment.slice(3, -3) : segment.slice(3);
+          const lines = rawInner.replace(/^\n/, "").split("\n");
           const firstLine = lines[0]?.trim() || "";
-          const hasLang = /^[a-zA-Z0-9_-]+$/.test(firstLine);
+          const hasLang = /^[a-zA-Z0-9_.-]+$/.test(firstLine);
           const lang = hasLang ? firstLine : "code";
-          const codeBody = hasLang ? lines.slice(1).join("\n") : lines.join("\n");
+          const codeBody = (hasLang ? lines.slice(1) : lines).join("\n").trimEnd();
 
           return (
             <div
@@ -88,8 +272,11 @@ function RagMarkdownContent({ content }) {
               className="my-3 overflow-hidden rounded-lg border border-line-strong bg-sunken"
             >
               <div className="flex items-center justify-between border-b border-line bg-paper px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">
-                <span>AST Slice · {lang}</span>
-                <span>Retrieved Function Body</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                  AST Slice · {lang}
+                </span>
+                <span>Retrieved Code</span>
               </div>
               <pre className="overflow-x-auto p-3.5 font-mono text-xs leading-relaxed text-ink">
                 <code>{codeBody}</code>
@@ -98,95 +285,141 @@ function RagMarkdownContent({ content }) {
           );
         }
 
-        const blocks = segment
-          .split(/\n{2,}/)
-          .map((b) => b.trim())
-          .filter(Boolean);
+        const parsedBlocks = parseNonCodeMarkdownBlocks(segment);
 
-        return blocks.map((block, bIdx) => {
+        return parsedBlocks.map((block, bIdx) => {
           const key = `${segIdx}-${bIdx}`;
-          if (block.startsWith("##### ")) {
+
+          if (block.type === "hr") {
+            return <hr key={key} className="my-3 border-line" />;
+          }
+
+          if (block.type === "heading") {
+            if (block.level <= 2) {
+              return (
+                <h3
+                  key={key}
+                  className="mt-4 border-b border-line pb-1.5 text-[15px] font-semibold tracking-tight text-ink first:mt-0"
+                >
+                  {renderInlineMarkdown(block.text)}
+                </h3>
+              );
+            }
+            if (block.level === 3) {
+              return (
+                <h4
+                  key={key}
+                  className="mt-3.5 text-[14px] font-semibold tracking-tight text-ink first:mt-0"
+                >
+                  {renderInlineMarkdown(block.text)}
+                </h4>
+              );
+            }
             return (
               <h5
                 key={key}
-                className="mt-3 font-mono text-xs font-semibold uppercase tracking-wider text-accent"
+                className="mt-3 font-mono text-xs font-semibold uppercase tracking-wider text-accent first:mt-0"
               >
-                {renderInlineMarkdown(block.slice(6))}
+                {renderInlineMarkdown(block.text)}
               </h5>
             );
           }
-          if (block.startsWith("#### ")) {
+
+          if (block.type === "table") {
             return (
-              <h4
+              <div
                 key={key}
-                className="mt-4 text-sm font-semibold tracking-tight text-ink"
+                className="my-3 overflow-x-auto rounded-lg border border-line-strong bg-surface"
               >
-                {renderInlineMarkdown(block.slice(5))}
-              </h4>
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-line-strong bg-sunken/80 font-mono text-[10.5px] uppercase tracking-wider text-ink">
+                      {block.headers.map((h, hIdx) => (
+                        <th key={hIdx} className="px-3.5 py-2.5 font-semibold">
+                          {renderInlineMarkdown(h)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {block.rows.map((row, rIdx) => (
+                      <tr
+                        key={rIdx}
+                        className="transition-colors hover:bg-paper/70"
+                      >
+                        {row.map((cell, cIdx) => (
+                          <td
+                            key={cIdx}
+                            className="px-3.5 py-2.5 align-top text-[12.5px] leading-relaxed text-ink-soft"
+                          >
+                            {renderInlineMarkdown(cell)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             );
           }
-          if (block.startsWith("### ")) {
-            return (
-              <h3
-                key={key}
-                className="text-base font-semibold tracking-tight text-ink"
-              >
-                {renderInlineMarkdown(block.slice(4))}
-              </h3>
-            );
-          }
-          if (block.startsWith("> ")) {
+
+          if (block.type === "blockquote") {
             return (
               <blockquote
                 key={key}
-                className="rounded-lg border-l-2 border-accent bg-paper px-3.5 py-2.5 text-xs text-ink-soft"
+                className="my-2.5 rounded-r-lg border-l-2 border-accent bg-surface px-3.5 py-2.5 text-[13px] leading-relaxed text-ink-soft"
               >
-                {renderInlineMarkdown(block.replace(/^>\s*/gm, ""))}
+                {renderInlineMarkdown(block.text)}
               </blockquote>
             );
           }
 
-          const lines = block.split("\n");
-          const isList = lines.every(
-            (l) =>
-              /^\s*[-*]\s+/.test(l) ||
-              /^\s*\d+\.\s+/.test(l) ||
-              /^\s{2,}/.test(l)
-          );
-
-          if (isList) {
+          if (block.type === "list") {
             return (
-              <ul key={key} className="space-y-1.5 pl-1">
-                {lines.map((line, lIdx) => {
-                  const cleaned = line
-                    .replace(/^\s*[-*]\s+/, "")
-                    .replace(/^\s*\d+\.\s+/, "");
-                  const isSubBullet = /^\s{2,}[-*]/.test(line);
-                  return (
-                    <li
-                      key={lIdx}
-                      className={`flex items-start gap-2 text-[13px] leading-relaxed ${
-                        isSubBullet ? "pl-5 text-muted" : "text-ink-soft"
-                      }`}
-                    >
-                      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/80" />
-                      <div className="min-w-0 flex-1">
-                        {renderInlineMarkdown(cleaned)}
-                      </div>
-                    </li>
-                  );
-                })}
+              <ul key={key} className="my-2 space-y-1.5">
+                {block.items.map((item, lIdx) => (
+                  <li
+                    key={lIdx}
+                    className={`flex items-start gap-2.5 text-[13.5px] leading-[1.65] ${
+                      item.indentLevel > 0 ? "pl-5 text-ink-soft/90" : "text-ink-soft"
+                    }`}
+                  >
+                    {item.orderedNum ? (
+                      <span className="mt-0.5 min-w-[1.25rem] shrink-0 font-mono text-[11px] font-semibold text-accent">
+                        {item.orderedNum}.
+                      </span>
+                    ) : (
+                      <span
+                        className={`mt-2 shrink-0 rounded-full ${
+                          item.indentLevel > 0
+                            ? "h-1 w-1 bg-muted"
+                            : "h-1.5 w-1.5 bg-accent"
+                        }`}
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      {renderInlineMarkdown(item.text)}
+                    </div>
+                  </li>
+                ))}
               </ul>
             );
           }
 
           return (
-            <p key={key} className="text-[13px] leading-relaxed text-ink-soft">
-              {renderInlineMarkdown(block)}
+            <p key={key} className="text-[13.5px] leading-[1.7] text-ink-soft">
+              {renderInlineMarkdown(block.text)}
             </p>
           );
         });
       })}
+
+      {isStreaming && (
+        <span
+          aria-hidden="true"
+          className="ml-1 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-accent"
+        />
+      )}
     </div>
   );
 }
@@ -256,6 +489,8 @@ function ProjectWorkspaceContent() {
   const [askMessages, setAskMessages] = useState([]);
   const [askInput, setAskInput] = useState("");
   const [askingRag, setAskingRag] = useState(false);
+  const [streamingMsgId, setStreamingMsgId] = useState(null);
+  const [streamedContent, setStreamedContent] = useState("");
   const [ragMemory, setRagMemory] = useState({
     pinnedFunctionIds: [],
     pinnedFiles: [],
@@ -263,6 +498,16 @@ function ProjectWorkspaceContent() {
   });
   const [expandedContextIds, setExpandedContextIds] = useState({});
   const askEndRef = useRef(null);
+  const askScrollContainerRef = useRef(null);
+  const streamTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (streamTimerRef.current) {
+        clearInterval(streamTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let token = null;
@@ -543,10 +788,80 @@ function ProjectWorkspaceContent() {
     ];
   }, [allFunctions, analysis]);
 
+  function scrollToAskBottom(smooth = true, onlyIfNearBottom = false) {
+    const container = askScrollContainerRef.current;
+    if (container) {
+      if (onlyIfNearBottom) {
+        const distanceFromBottom =
+          container.scrollHeight - container.scrollTop - container.clientHeight;
+        if (distanceFromBottom > 160) return;
+      }
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: smooth ? "smooth" : "auto",
+      });
+    } else {
+      askEndRef.current?.scrollIntoView({
+        behavior: smooth ? "smooth" : "auto",
+        block: "end",
+      });
+    }
+  }
+
+  function stopSequentialStream() {
+    if (streamTimerRef.current) {
+      clearInterval(streamTimerRef.current);
+      streamTimerRef.current = null;
+    }
+    setStreamingMsgId(null);
+    setStreamedContent("");
+    setTimeout(() => scrollToAskBottom(true, true), 40);
+  }
+
+  function startSequentialStream(msgId, fullText) {
+    if (streamTimerRef.current) {
+      clearInterval(streamTimerRef.current);
+      streamTimerRef.current = null;
+    }
+
+    const text = String(fullText || "");
+    if (!text) {
+      setStreamingMsgId(null);
+      setStreamedContent("");
+      return;
+    }
+
+    // Split into word chunks (each keeping its trailing whitespace/newlines)
+    // and stream 2 words every 25ms (~80 words/sec, ~100 tokens/sec) to match Gemini & ChatGPT
+    const wordChunks = text.match(/\S+\s*|\s+/g) || [text];
+    const totalChunks = wordChunks.length;
+    const wordsPerTick = 2;
+    let cursor = 0;
+
+    setStreamingMsgId(msgId);
+    setStreamedContent("");
+
+    streamTimerRef.current = setInterval(() => {
+      cursor += wordsPerTick;
+      if (cursor >= totalChunks) {
+        clearInterval(streamTimerRef.current);
+        streamTimerRef.current = null;
+        setStreamingMsgId(null);
+        setStreamedContent("");
+        setTimeout(() => scrollToAskBottom(true, true), 40);
+      } else {
+        setStreamedContent(wordChunks.slice(0, cursor).join(""));
+        scrollToAskBottom(false, true);
+      }
+    }, 25);
+  }
+
   async function handleAskSubmit(e, customQuestion = null, memoryOverride = null) {
     if (e) e.preventDefault();
     const q = String(customQuestion ?? askInput).trim();
     if (!q || askingRag) return;
+
+    stopSequentialStream();
 
     const userMsgId = `usr_${Date.now()}`;
     const userMessage = {
@@ -565,8 +880,8 @@ function ProjectWorkspaceContent() {
     setAskingRag(true);
 
     setTimeout(() => {
-      askEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-    }, 60);
+      scrollToAskBottom(true);
+    }, 50);
 
     try {
       const token = localStorage.getItem("archon_token") || "";
@@ -593,20 +908,22 @@ function ProjectWorkspaceContent() {
       const assistantMsgId = `ast_${Date.now()}`;
 
       if (!res.ok) {
+        const errText =
+          data?.message ||
+          "Unable to process that question right now. Please try again.";
         setAskMessages((prev) => [
           ...prev,
           {
             id: assistantMsgId,
             role: "assistant",
-            content:
-              data?.message ||
-              "Unable to process that question right now. Please try again.",
+            content: errText,
             timestamp: new Date().toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
             }),
           },
         ]);
+        startSequentialStream(assistantMsgId, errText);
       } else {
         if (data.updatedMemory) {
           setRagMemory(data.updatedMemory);
@@ -630,26 +947,30 @@ function ProjectWorkspaceContent() {
             }),
           },
         ]);
+        startSequentialStream(assistantMsgId, data.answer);
       }
     } catch {
+      const errId = `err_${Date.now()}`;
+      const errMsg =
+        "Could not reach the AST RAG backend on port 4000. Verify the server is running.";
       setAskMessages((prev) => [
         ...prev,
         {
-          id: `err_${Date.now()}`,
+          id: errId,
           role: "assistant",
-          content:
-            "Could not reach the AST RAG backend on port 4000. Verify the server is running.",
+          content: errMsg,
           timestamp: new Date().toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
           }),
         },
       ]);
+      startSequentialStream(errId, errMsg);
     } finally {
       setAskingRag(false);
       setTimeout(() => {
-        askEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      }, 100);
+        scrollToAskBottom(true);
+      }, 80);
     }
   }
 
@@ -2052,66 +2373,87 @@ function ProjectWorkspaceContent() {
         )}
 
         {/* ========================================================= */}
-        {/* SECTION 3: ASK CODEBASE (GRAPH-AWARE AST RAG WORKSPACE)   */}
+        {/* SECTION 3: ASK CODEBASE (VIEWPORT-LOCKED LLM WORKSPACE)   */}
         {/* ========================================================= */}
         {activeSection === "ask" && (
-          <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col p-6 md:p-8">
-            {/* Top RAG Intelligence & Memory Status Bar */}
-            <div className="rounded-xl border border-line-strong bg-surface p-5">
-              <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
-                <div>
-                  <div className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
+          <div className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden bg-paper">
+            {/* 1. FIXED TOP STATUS & MEMORY BAR */}
+            <div className="shrink-0 border-b border-line bg-surface px-6 py-2.5">
+              <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span className="inline-flex items-center gap-1.5 rounded bg-ink px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-paper">
                     <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    Section 03 · Graph-Aware AST RAG · Groq LPU
-                  </div>
-                  <h1 className="mt-1 text-xl font-semibold tracking-tight text-ink sm:text-2xl">
+                    GROQ LPU · AST RAG
+                  </span>
+                  <h1 className="text-sm font-semibold tracking-tight text-ink">
                     Ask {analysis.fullName}
                   </h1>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">
-                    Archon never dumps all {analysis.fileCount} files into the
-                    prompt. It searches the AST call graph, retrieves only the
-                    relevant functions and 1-hop neighbors needed for your
-                    question, and remembers active symbols across follow-ups.
-                  </p>
+                  <span className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[10px] text-muted">
+                    {analysis.functionCount} AST fns · {analysis.fileCount} files
+                  </span>
                 </div>
 
-                {/* Live Session Token Telemetry Summary */}
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <div className="rounded-lg border border-line bg-paper px-3.5 py-2 text-right font-mono">
-                    <div className="text-[10px] uppercase tracking-wider text-muted">
-                      Indexed AST Scope
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Active Pinned Memory Pills */}
+                  {ragMemory.pinnedFunctionIds?.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                        Pinned:
+                      </span>
+                      {ragMemory.pinnedFunctionIds.slice(0, 3).map((fnId) => {
+                        const fnObj = allFunctions.find((f) => f.id === fnId);
+                        const shortLabel = fnObj
+                          ? `${fnObj.name}()`
+                          : `${fnId.split("::").pop()}()`;
+                        return (
+                          <span
+                            key={fnId}
+                            className="inline-flex items-center gap-1 rounded border border-line-strong bg-paper px-2 py-0.5 font-mono text-[10px] text-ink"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => openFunctionInGraph(fnId)}
+                              className="hover:text-accent"
+                              title="Inspect function in Graph Explorer"
+                            >
+                              {shortLabel}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removePinnedFunction(fnId)}
+                              className="text-faint hover:text-accent"
+                              aria-label={`Unpin ${shortLabel}`}
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        );
+                      })}
                     </div>
-                    <div className="mt-0.5 text-xs font-semibold text-ink">
-                      {analysis.functionCount} fns · {analysis.fileCount} files
-                    </div>
-                  </div>
+                  )}
 
                   {askMessages.some((m) => m.telemetry) && (
-                    <div className="rounded-lg border border-[#c8502a]/40 bg-[#fbeae4]/40 px-3.5 py-2 text-right font-mono">
-                      <div className="text-[10px] uppercase tracking-wider text-accent">
-                        Avg Token Savings
-                      </div>
-                      <div className="mt-0.5 text-xs font-semibold text-accent">
-                        {(() => {
-                          const withTel = askMessages.filter(
-                            (m) => m.telemetry?.tokensSavedPercent
-                          );
-                          if (!withTel.length) return "92%";
-                          const avg =
-                            withTel.reduce(
-                              (acc, m) => acc + m.telemetry.tokensSavedPercent,
-                              0
-                            ) / withTel.length;
-                          return `${avg.toFixed(1)}% saved`;
-                        })()}
-                      </div>
-                    </div>
+                    <span className="rounded border border-[#c8502a]/40 bg-[#fbeae4]/45 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                      {(() => {
+                        const withTel = askMessages.filter(
+                          (m) => m.telemetry?.tokensSavedPercent
+                        );
+                        if (!withTel.length) return "92% tokens saved";
+                        const avg =
+                          withTel.reduce(
+                            (acc, m) => acc + m.telemetry.tokensSavedPercent,
+                            0
+                          ) / withTel.length;
+                        return `${avg.toFixed(1)}% avg tokens saved`;
+                      })()}
+                    </span>
                   )}
 
                   {askMessages.length > 0 && (
                     <button
                       type="button"
                       onClick={() => {
+                        stopSequentialStream();
                         setAskMessages([]);
                         setRagMemory({
                           pinnedFunctionIds: [],
@@ -2120,142 +2462,119 @@ function ProjectWorkspaceContent() {
                         });
                         setExpandedContextIds({});
                       }}
-                      className="rounded-md border border-line-strong bg-paper px-3 py-2 font-mono text-xs text-muted transition-colors hover:border-ink hover:text-ink"
+                      className="rounded border border-line-strong bg-paper px-2.5 py-1 font-mono text-[10px] text-muted transition-colors hover:border-ink hover:text-ink"
                     >
                       Clear chat
                     </button>
                   )}
                 </div>
               </div>
-
-                  {/* Active Conversational Memory Bar (Pinned AST Symbols) */}
-              {ragMemory.pinnedFunctionIds?.length > 0 && (
-                <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
-                    Pinned in RAG Memory:
-                  </span>
-                  {ragMemory.pinnedFunctionIds.map((fnId) => {
-                    const fnObj = allFunctions.find((f) => f.id === fnId);
-                    const shortLabel = fnObj
-                      ? `${fnObj.name}()`
-                      : `${fnId.split("::").pop()}()`;
-                    return (
-                      <span
-                        key={fnId}
-                        className="inline-flex items-center gap-1.5 rounded border border-line-strong bg-paper px-2.5 py-1 font-mono text-[11px] text-ink"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => openFunctionInGraph(fnId)}
-                          className="hover:text-accent"
-                          title="Inspect function in Graph Explorer"
-                        >
-                          {shortLabel}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removePinnedFunction(fnId)}
-                          className="text-faint hover:text-accent"
-                          aria-label={`Unpin ${shortLabel}`}
-                        >
-                          ✕
-                        </button>
-                      </span>
-                    );
-                  })}
-                </div>
-              )}
             </div>
 
-            {/* Conversation Thread or Empty Starter State */}
-            <div className="mt-5 flex flex-1 flex-col justify-between rounded-xl border border-line-strong bg-surface">
-              <div className="flex-1 space-y-6 overflow-y-auto p-6">
-                {askMessages.length === 0 ? (
-                  <div className="py-4">
-                    <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
-                      Try an AST-Grounded Query on {analysis.fullName}
+            {/* 2. SCROLLABLE MIDDLE LLM MESSAGE VIEWPORT */}
+            <div
+              ref={askScrollContainerRef}
+              className="flex-1 overflow-y-auto px-6 py-4"
+            >
+              {askMessages.length === 0 ? (
+                <div className="mx-auto flex min-h-full max-w-3xl flex-col justify-center py-2">
+                  {/* Compact LLM Welcome Header */}
+                  <div className="text-center">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-line-strong bg-surface px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-accent">
+                      <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                      Section 03 · Graph-Aware AST RAG Assistant
                     </div>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      {starterPrompts.map((item) => (
-                        <button
-                          key={item.title}
-                          type="button"
-                          disabled={askingRag}
-                          onClick={() => handleAskSubmit(null, item.prompt)}
-                          className="group flex flex-col justify-between rounded-xl border border-line bg-paper p-4 text-left transition-all hover:border-ink hover:bg-surface"
-                        >
-                          <div>
-                            <div className="flex items-center justify-between">
-                              <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
-                                {item.mode}
-                              </span>
-                              <span className="font-mono text-xs text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-ink">
-                                →
-                              </span>
-                            </div>
-                            <div className="mt-2 font-mono text-xs font-semibold text-ink">
-                              {item.title}
-                            </div>
-                            <p className="mt-1 text-xs leading-relaxed text-muted">
-                              “{item.prompt}”
-                            </p>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
+                    <h2 className="mt-2.5 text-xl font-semibold tracking-tight text-ink sm:text-2xl">
+                      What would you like to trace in {analysis.repoName}?
+                    </h2>
+                    <p className="mx-auto mt-1.5 max-w-xl text-xs leading-relaxed text-muted">
+                      Archon never dumps all {analysis.fileCount} files into the
+                      prompt. It filters stop words, locates the exact AST
+                      functions and 1-hop neighbors linked to your question, and
+                      streams a grounded explanation via Groq LLM.
+                    </p>
+                  </div>
 
-                    {/* How AST RAG Works Explainer Strip */}
-                    <div className="mt-6 rounded-xl border border-line bg-sunken/70 p-4">
-                      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-soft">
-                        4-Stage RAG Pipeline (Stop-Words → SLM Router → Groq LLM)
+                  {/* 2x2 Starter Prompt Cards */}
+                  <div className="mt-5 grid gap-2.5 sm:grid-cols-2">
+                    {starterPrompts.map((item) => (
+                      <button
+                        key={item.title}
+                        type="button"
+                        disabled={askingRag}
+                        onClick={() => handleAskSubmit(null, item.prompt)}
+                        className="group flex flex-col justify-between rounded-xl border border-line-strong bg-surface p-3.5 text-left transition-all hover:border-ink hover:bg-paper"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-accent">
+                              {item.mode}
+                            </span>
+                            <span className="font-mono text-xs text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-ink">
+                              →
+                            </span>
+                          </div>
+                          <div className="mt-1.5 font-mono text-xs font-semibold text-ink">
+                            {item.title}
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-[11.5px] leading-relaxed text-muted">
+                            “{item.prompt}”
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Compact 3-Column RAG Pipeline Strip */}
+                  <div className="mt-4 rounded-xl border border-line bg-surface/80 p-3.5">
+                    <div className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted">
+                      4-Stage AST Retrieval Pipeline (Stop-Words → SLM Router → Groq LLM)
+                    </div>
+                    <div className="mt-2 grid gap-3 text-[11px] text-muted sm:grid-cols-3">
+                      <div>
+                        <strong className="font-mono text-[10.5px] text-ink">
+                          01 · Keyword & Stop-Word Filter
+                        </strong>
+                        <p className="mt-0.5 leading-relaxed">
+                          Strips stop words and matches keywords against AST
+                          functions, files, and call-graph neighbors.
+                        </p>
                       </div>
-                      <div className="mt-2.5 grid gap-3 text-xs text-muted sm:grid-cols-3">
-                        <div>
-                          <strong className="font-mono text-[11px] text-ink">
-                            01 · Stop-Word & Keyword Filter
-                          </strong>
-                          <p className="mt-0.5 leading-relaxed">
-                            Strips stop words from your question and matches
-                            keywords against AST function names, file paths, and
-                            call-graph neighbors.
-                          </p>
-                        </div>
-                        <div>
-                          <strong className="font-mono text-[11px] text-ink">
-                            02 · SLM Fallback Router
-                          </strong>
-                          <p className="mt-0.5 leading-relaxed">
-                            If keywords don&apos;t match directly, a fast Groq
-                            SLM (<code className="font-mono">gpt-oss-20b</code>
-                            ) identifies which files and functions are linked to
-                            your question.
-                          </p>
-                        </div>
-                        <div>
-                          <strong className="font-mono text-[11px] text-ink">
-                            03 · LLM Answer & Report Guard
-                          </strong>
-                          <p className="mt-0.5 leading-relaxed">
-                            Sends only the linked functions to Groq LLM (
-                            <code className="font-mono">gpt-oss-120b</code>)
-                            for a clear explanation—or redirects whole-project
-                            report requests to Section 04.
-                          </p>
-                        </div>
+                      <div>
+                        <strong className="font-mono text-[10.5px] text-ink">
+                          02 · SLM Fallback Router
+                        </strong>
+                        <p className="mt-0.5 leading-relaxed">
+                          If keywords don&apos;t match directly, Groq SLM (
+                          <code className="font-mono">gpt-oss-20b</code>) selects
+                          the linked files & functions.
+                        </p>
+                      </div>
+                      <div>
+                        <strong className="font-mono text-[10.5px] text-ink">
+                          03 · Groq LLM & Report Guard
+                        </strong>
+                        <p className="mt-0.5 leading-relaxed">
+                          Streams explanation from{" "}
+                          <code className="font-mono">gpt-oss-120b</code> or
+                          redirects full-repo report queries to Section 04.
+                        </p>
                       </div>
                     </div>
                   </div>
-                ) : (
-                  askMessages.map((msg) => {
+                </div>
+              ) : (
+                <div className="mx-auto max-w-3xl space-y-5 pb-4">
+                  {askMessages.map((msg) => {
                     if (msg.role === "user") {
                       return (
                         <div key={msg.id} className="flex justify-end">
-                          <div className="max-w-2xl rounded-xl border border-ink bg-ink px-4 py-3 text-paper">
+                          <div className="max-w-xl rounded-2xl rounded-tr-sm border border-ink bg-ink px-4 py-3 text-paper shadow-sm">
                             <div className="flex items-center justify-between gap-4 font-mono text-[10px] text-paper/70">
                               <span>YOU</span>
                               <span>{msg.timestamp}</span>
                             </div>
-                            <p className="mt-1 text-sm leading-relaxed">
+                            <p className="mt-1 text-[13.5px] leading-relaxed">
                               {msg.content}
                             </p>
                           </div>
@@ -2264,25 +2583,33 @@ function ProjectWorkspaceContent() {
                     }
 
                     const isContextOpen = Boolean(expandedContextIds[msg.id]);
+                    const isThisMsgStreaming = streamingMsgId === msg.id;
+                    const displayedMarkdown = isThisMsgStreaming
+                      ? streamedContent
+                      : msg.content;
 
                     return (
                       <div
                         key={msg.id}
-                        className="rounded-xl border border-line-strong bg-paper p-5"
+                        className="rounded-2xl border border-line-strong bg-surface p-5 shadow-sm"
                       >
                         {/* Top Telemetry & Mode Badge Bar */}
                         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="inline-flex items-center gap-1.5 rounded bg-ink px-2.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-paper">
-                              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                              ARCHON RAG
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full bg-accent ${
+                                  isThisMsgStreaming ? "animate-ping" : ""
+                                }`}
+                              />
+                              ARCHON LLM
                             </span>
                             {msg.telemetry && (
                               <>
-                                <span className="rounded border border-line-strong bg-surface px-2 py-0.5 font-mono text-[10px] uppercase text-ink-soft">
+                                <span className="rounded border border-line-strong bg-paper px-2 py-0.5 font-mono text-[10px] uppercase text-ink-soft">
                                   {msg.telemetry.intentLabel || msg.intent}
                                 </span>
-                                <span className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10px] text-muted">
+                                <span className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[10px] text-muted">
                                   {msg.telemetry.functionsRetrieved} AST fns ·{" "}
                                   {msg.telemetry.neighborStubsCount || 0} stubs
                                 </span>
@@ -2295,21 +2622,33 @@ function ProjectWorkspaceContent() {
                             )}
                           </div>
 
-                          {msg.telemetry &&
-                            (msg.retrievedFunctions?.length > 0 ||
-                              msg.neighborStubs?.length > 0) && (
+                          <div className="flex items-center gap-2">
+                            {isThisMsgStreaming && (
                               <button
                                 type="button"
-                                onClick={() => toggleContextDrawer(msg.id)}
-                                className="rounded border border-line-strong bg-surface px-2.5 py-1 font-mono text-[10px] font-medium text-ink transition-colors hover:border-ink hover:text-accent"
+                                onClick={stopSequentialStream}
+                                className="rounded border border-accent/50 bg-[#fbeae4]/50 px-2.5 py-1 font-mono text-[10px] font-medium text-accent transition-colors hover:bg-[#fbeae4]"
                               >
-                                {isContextOpen
-                                  ? "Hide AST Context ▲"
-                                  : `Inspect Retrieved AST (${
-                                      msg.retrievedFunctions?.length || 0
-                                    }) ▼`}
+                                Skip animation ⏭
                               </button>
                             )}
+
+                            {msg.telemetry &&
+                              (msg.retrievedFunctions?.length > 0 ||
+                                msg.neighborStubs?.length > 0) && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleContextDrawer(msg.id)}
+                                  className="rounded border border-line-strong bg-paper px-2.5 py-1 font-mono text-[10px] font-medium text-ink transition-colors hover:border-ink hover:text-accent"
+                                >
+                                  {isContextOpen
+                                    ? "Hide AST Context ▲"
+                                    : `Inspect Retrieved AST (${
+                                        msg.retrievedFunctions?.length || 0
+                                      }) ▼`}
+                                </button>
+                              )}
+                          </div>
                         </div>
 
                         {/* Collapsible X-Ray Drawer: Which exact AST functions were sent to the LLM */}
@@ -2319,7 +2658,7 @@ function ProjectWorkspaceContent() {
                               initial={{ opacity: 0, height: 0 }}
                               animate={{ opacity: 1, height: "auto" }}
                               exit={{ opacity: 0, height: 0 }}
-                              className="mt-3 overflow-hidden rounded-lg border border-line-strong bg-surface p-4"
+                              className="mt-3 overflow-hidden rounded-lg border border-line-strong bg-paper p-4"
                             >
                               <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]">
                                 <span className="font-semibold uppercase tracking-wider text-ink">
@@ -2339,7 +2678,7 @@ function ProjectWorkspaceContent() {
                                   {msg.retrievedFunctions.map((fn) => (
                                     <div
                                       key={fn.id}
-                                      className="flex items-start justify-between gap-2 rounded-lg border border-line bg-paper p-2.5 font-mono text-xs"
+                                      className="flex items-start justify-between gap-2 rounded-lg border border-line bg-surface p-2.5 font-mono text-xs"
                                     >
                                       <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-1.5">
@@ -2365,7 +2704,7 @@ function ProjectWorkspaceContent() {
                                       <button
                                         type="button"
                                         onClick={() => openFunctionInGraph(fn.id)}
-                                        className="shrink-0 rounded border border-line-strong bg-surface px-2 py-1 text-[10px] text-ink hover:border-ink hover:text-accent"
+                                        className="shrink-0 rounded border border-line-strong bg-paper px-2 py-1 text-[10px] text-ink hover:border-ink hover:text-accent"
                                       >
                                         Graph →
                                       </button>
@@ -2386,7 +2725,7 @@ function ProjectWorkspaceContent() {
                                         key={nb.id}
                                         type="button"
                                         onClick={() => openFunctionInGraph(nb.id)}
-                                        className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[10px] text-ink-soft hover:border-ink hover:text-accent"
+                                        className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10px] text-ink-soft hover:border-ink hover:text-accent"
                                       >
                                         {nb.name}() · {nb.relation}
                                       </button>
@@ -2400,7 +2739,7 @@ function ProjectWorkspaceContent() {
 
                         {/* Interactive Call-Chain Stepper Strip */}
                         {msg.callChain?.length > 1 && (
-                          <div className="mt-3 rounded-lg border border-line bg-surface p-3">
+                          <div className="mt-3 rounded-lg border border-line bg-paper p-3">
                             <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-muted">
                               <span>
                                 Traced AST Execution Path (Click any node to
@@ -2417,7 +2756,7 @@ function ProjectWorkspaceContent() {
                                   <button
                                     type="button"
                                     onClick={() => openFunctionInGraph(step.id)}
-                                    className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-paper px-2.5 py-1 font-mono text-xs text-ink transition-colors hover:border-accent hover:text-accent"
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-surface px-2.5 py-1 font-mono text-xs text-ink transition-colors hover:border-accent hover:text-accent"
                                   >
                                     <span className="text-[10px] font-semibold text-accent">
                                       {idx + 1}
@@ -2440,13 +2779,16 @@ function ProjectWorkspaceContent() {
                           </div>
                         )}
 
-                        {/* Rendered Markdown Answer Body */}
+                        {/* Rendered Markdown Answer Body (Sequential Streaming) */}
                         <div className="mt-4">
-                          <RagMarkdownContent content={msg.content} />
+                          <RagMarkdownContent
+                            content={displayedMarkdown}
+                            isStreaming={isThisMsgStreaming}
+                          />
                         </div>
 
                         {/* Special One-Click Redirect Card when user asks for Detailed / Full Project Report */}
-                        {msg.redirectAction && (
+                        {!isThisMsgStreaming && msg.redirectAction && (
                           <div className="mt-4 flex flex-col items-start justify-between gap-4 rounded-xl border border-[#c8502a] bg-[#fbeae4]/45 p-4 sm:flex-row sm:items-center">
                             <div>
                               <div className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
@@ -2471,73 +2813,95 @@ function ProjectWorkspaceContent() {
                         )}
 
                         {/* Suggested Contextual Follow-Up Chips */}
-                        {msg.suggestedFollowUps?.length > 0 && (
-                          <div className="mt-4 border-t border-line pt-3">
-                            <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
-                              Continue Tracing (Uses Pinned Memory):
+                        {!isThisMsgStreaming &&
+                          msg.suggestedFollowUps?.length > 0 && (
+                            <div className="mt-4 border-t border-line pt-3">
+                              <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                                Continue Tracing (Uses Pinned Memory):
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {msg.suggestedFollowUps.map((followUp) => (
+                                  <button
+                                    key={followUp}
+                                    type="button"
+                                    disabled={askingRag}
+                                    onClick={() =>
+                                      handleAskSubmit(null, followUp)
+                                    }
+                                    className="rounded-md border border-line-strong bg-paper px-3 py-1.5 font-mono text-xs text-ink-soft transition-colors hover:border-ink hover:text-accent disabled:opacity-50"
+                                  >
+                                    {followUp} →
+                                  </button>
+                                ))}
+                              </div>
                             </div>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {msg.suggestedFollowUps.map((followUp) => (
-                                <button
-                                  key={followUp}
-                                  type="button"
-                                  disabled={askingRag}
-                                  onClick={() =>
-                                    handleAskSubmit(null, followUp)
-                                  }
-                                  className="rounded-md border border-line-strong bg-surface px-3 py-1.5 font-mono text-xs text-ink-soft transition-colors hover:border-ink hover:text-accent disabled:opacity-50"
-                                >
-                                  {followUp} →
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                          )}
                       </div>
                     );
-                  })
-                )}
+                  })}
 
-                {askingRag && (
-                  <div className="rounded-xl border border-line bg-paper p-5">
-                    <div className="flex items-center gap-3 font-mono text-xs text-ink">
-                      <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
-                      <span>
-                        Traversing AST call graph & retrieving minimal function
-                        slices…
-                      </span>
+                  {askingRag && (
+                    <div className="rounded-2xl border border-line-strong bg-surface p-5 shadow-sm">
+                      <div className="flex items-center gap-3 font-mono text-xs text-ink">
+                        <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
+                        <span>
+                          Filtering stop words, matching AST symbols &
+                          generating Groq LLM response…
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                <div ref={askEndRef} />
-              </div>
+                  <div ref={askEndRef} />
+                </div>
+              )}
+            </div>
 
-              {/* Bottom Prompt Input Form */}
+            {/* 3. FIXED BOTTOM LLM PROMPT DOCK (ALWAYS VISIBLE WITHOUT PAGE SCROLL) */}
+            <div className="shrink-0 border-t border-line bg-surface px-6 py-3">
               <form
                 onSubmit={(e) => handleAskSubmit(e)}
-                className="border-t border-line bg-paper p-4"
+                className="mx-auto max-w-3xl"
               >
-                <div className="flex flex-col gap-3 sm:flex-row">
+                <div className="flex items-center gap-2 rounded-xl border border-line-strong bg-paper px-3.5 py-2 shadow-sm transition-colors focus-within:border-ink">
+                  <span className="font-mono text-xs font-semibold text-accent">
+                    ❯
+                  </span>
                   <input
                     type="text"
                     value={askInput}
                     onChange={(e) => setAskInput(e.target.value)}
                     disabled={askingRag}
-                    placeholder={`Ask about any function, execution flow, dependency, or blast radius in ${analysis.fullName}…`}
-                    className="h-11 flex-1 rounded-md border border-line-strong bg-surface px-4 font-mono text-xs text-ink placeholder:text-faint focus:border-ink focus:outline-none disabled:opacity-60"
+                    placeholder={`Ask anything about ${analysis.fullName} (functions, login flow, blast radius, dependencies)…`}
+                    className="h-8 flex-1 bg-transparent font-mono text-xs text-ink placeholder:text-faint focus:outline-none disabled:opacity-60"
                   />
+                  {streamingMsgId && (
+                    <button
+                      type="button"
+                      onClick={stopSequentialStream}
+                      className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-line-strong bg-surface px-3 font-mono text-[11px] font-medium text-ink transition-colors hover:border-ink"
+                    >
+                      Finish stream
+                    </button>
+                  )}
                   <button
                     type="submit"
                     disabled={askingRag || !askInput.trim()}
-                    className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-ink px-5 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft disabled:opacity-50"
+                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-ink px-4 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft disabled:opacity-40"
                   >
-                    {askingRag ? "Querying AST…" : "Ask Codebase →"}
+                    {askingRag ? "Thinking…" : "Ask Codebase →"}
                   </button>
+                </div>
+                <div className="mt-1.5 flex items-center justify-between px-1 font-mono text-[10px] text-muted">
+                  <span>
+                    AST RAG sends only matched functions · Whole-repo reports
+                    auto-redirect to Section 04
+                  </span>
+                  <span>Enter ↵ to send</span>
                 </div>
               </form>
             </div>
-          </main>
+          </div>
         )}
 
         {/* ========================================================= */}

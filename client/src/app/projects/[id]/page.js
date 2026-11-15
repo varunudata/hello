@@ -52,12 +52,13 @@ function renderInlineMarkdown(text) {
   return tokens.map((part, idx) => {
     if (!part) return null;
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+      const codeStr = part.slice(1, -1);
       return (
         <code
           key={idx}
-          className="mx-0.5 rounded border border-line-strong bg-sunken px-1.5 py-0.5 font-mono text-[11.5px] font-medium text-ink"
+          className="break-words rounded-[5px] bg-[#efede8] px-1.5 py-[1px] font-mono text-[12.5px] font-medium text-ink"
         >
-          {part.slice(1, -1)}
+          {codeStr}
         </code>
       );
     }
@@ -253,7 +254,7 @@ function RagMarkdownContent({ content, isStreaming = false }) {
   const segments = normalizedContent.split(/(```[\s\S]*?```|```[\s\S]*$)/g);
 
   return (
-    <div className="space-y-3 text-[13.5px] leading-[1.7] text-ink-soft">
+    <div className="space-y-3 text-[14px] leading-[1.7] text-[#2c2a24]">
       {segments.map((segment, segIdx) => {
         if (!segment) return null;
 
@@ -269,16 +270,13 @@ function RagMarkdownContent({ content, isStreaming = false }) {
           return (
             <div
               key={segIdx}
-              className="my-3 overflow-hidden rounded-lg border border-line-strong bg-sunken"
+              className="my-3 overflow-hidden rounded-xl border border-line bg-[#f4f2ed]"
             >
-              <div className="flex items-center justify-between border-b border-line bg-paper px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">
-                <span className="flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                  AST Slice · {lang}
-                </span>
-                <span>Retrieved Code</span>
+              <div className="flex items-center justify-between border-b border-line bg-[#ebe8e1] px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">
+                <span>{lang}</span>
+                <span>AST snippet</span>
               </div>
-              <pre className="overflow-x-auto p-3.5 font-mono text-xs leading-relaxed text-ink">
+              <pre className="overflow-x-auto p-3.5 font-mono text-[12.5px] leading-relaxed text-ink">
                 <code>{codeBody}</code>
               </pre>
             </div>
@@ -376,24 +374,24 @@ function RagMarkdownContent({ content, isStreaming = false }) {
 
           if (block.type === "list") {
             return (
-              <ul key={key} className="my-2 space-y-1.5">
+              <ul key={key} className="my-2.5 space-y-2">
                 {block.items.map((item, lIdx) => (
                   <li
                     key={lIdx}
-                    className={`flex items-start gap-2.5 text-[13.5px] leading-[1.65] ${
-                      item.indentLevel > 0 ? "pl-5 text-ink-soft/90" : "text-ink-soft"
+                    className={`flex items-start gap-2.5 text-[14px] leading-[1.68] ${
+                      item.indentLevel > 0 ? "pl-5 text-ink-soft" : "text-[#2c2a24]"
                     }`}
                   >
                     {item.orderedNum ? (
-                      <span className="mt-0.5 min-w-[1.25rem] shrink-0 font-mono text-[11px] font-semibold text-accent">
+                      <span className="mt-[2px] min-w-[1.25rem] shrink-0 font-mono text-[12px] font-semibold tabular-nums text-accent">
                         {item.orderedNum}.
                       </span>
                     ) : (
                       <span
-                        className={`mt-2 shrink-0 rounded-full ${
+                        className={`mt-[10px] shrink-0 rounded-full ${
                           item.indentLevel > 0
-                            ? "h-1 w-1 bg-muted"
-                            : "h-1.5 w-1.5 bg-accent"
+                            ? "h-1 w-1 bg-muted/60"
+                            : "h-1.5 w-1.5 bg-ink/45"
                         }`}
                       />
                     )}
@@ -407,7 +405,7 @@ function RagMarkdownContent({ content, isStreaming = false }) {
           }
 
           return (
-            <p key={key} className="text-[13.5px] leading-[1.7] text-ink-soft">
+            <p key={key} className="text-[14px] leading-[1.7] text-[#2c2a24]">
               {renderInlineMarkdown(block.text)}
             </p>
           );
@@ -2564,17 +2562,13 @@ function ProjectWorkspaceContent() {
                   </div>
                 </div>
               ) : (
-                <div className="mx-auto max-w-3xl space-y-5 pb-4">
+                <div className="mx-auto max-w-3xl space-y-6 py-2 pb-6">
                   {askMessages.map((msg) => {
                     if (msg.role === "user") {
                       return (
                         <div key={msg.id} className="flex justify-end">
-                          <div className="max-w-xl rounded-2xl rounded-tr-sm border border-ink bg-ink px-4 py-3 text-paper shadow-sm">
-                            <div className="flex items-center justify-between gap-4 font-mono text-[10px] text-paper/70">
-                              <span>YOU</span>
-                              <span>{msg.timestamp}</span>
-                            </div>
-                            <p className="mt-1 text-[13.5px] leading-relaxed">
+                          <div className="max-w-lg rounded-2xl rounded-br-sm bg-ink px-4 py-2.5 text-paper shadow-sm">
+                            <p className="text-[14px] leading-relaxed">
                               {msg.content}
                             </p>
                           </div>
@@ -2587,49 +2581,60 @@ function ProjectWorkspaceContent() {
                     const displayedMarkdown = isThisMsgStreaming
                       ? streamedContent
                       : msg.content;
+                    const cleanCallChain = (msg.callChain || []).filter(
+                      (step) =>
+                        !String(step.file || "")
+                          .toLowerCase()
+                          .includes("/components/ui/") &&
+                        !/^(button|input|label|checkbox|card\w*|table\w*|tabs\w*|select\w*|textarea|badge|dialog\w*|cn)$/i.test(
+                          step.name || ""
+                        )
+                    );
 
                     return (
                       <div
                         key={msg.id}
-                        className="rounded-2xl border border-line-strong bg-surface p-5 shadow-sm"
+                        className="space-y-3 border-b border-line/70 pb-6 last:border-b-0"
                       >
-                        {/* Top Telemetry & Mode Badge Bar */}
-                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="inline-flex items-center gap-1.5 rounded bg-ink px-2.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-paper">
-                              <span
-                                className={`h-1.5 w-1.5 rounded-full bg-accent ${
-                                  isThisMsgStreaming ? "animate-ping" : ""
-                                }`}
-                              />
-                              ARCHON LLM
+                        {/* Minimal Single-Row Assistant Header */}
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-ink font-mono text-[10px] font-bold text-paper">
+                              A
+                            </span>
+                            <span className="text-xs font-semibold text-ink">
+                              Archon
                             </span>
                             {msg.telemetry && (
-                              <>
-                                <span className="rounded border border-line-strong bg-paper px-2 py-0.5 font-mono text-[10px] uppercase text-ink-soft">
-                                  {msg.telemetry.intentLabel || msg.intent}
-                                </span>
-                                <span className="rounded border border-line bg-paper px-2 py-0.5 font-mono text-[10px] text-muted">
-                                  {msg.telemetry.functionsRetrieved} AST fns ·{" "}
-                                  {msg.telemetry.neighborStubsCount || 0} stubs
-                                </span>
-                                <span className="rounded border border-[#c8502a]/40 bg-[#fbeae4]/50 px-2 py-0.5 font-mono text-[10px] font-semibold text-accent">
-                                  {msg.telemetry.tokensSent.toLocaleString()}{" "}
-                                  tokens sent ·{" "}
-                                  {msg.telemetry.tokensSavedPercent}% saved
-                                </span>
-                              </>
+                              <span className="truncate font-mono text-[11px] text-muted">
+                                ·{" "}
+                                {msg.telemetry.functionsRetrieved > 0
+                                  ? `${msg.telemetry.functionsRetrieved} AST ${
+                                      msg.telemetry.functionsRetrieved === 1
+                                        ? "fn"
+                                        : "fns"
+                                    }`
+                                  : msg.telemetry.intentLabel || msg.intent}
+                                {msg.telemetry.tokensSent > 0 && (
+                                  <>
+                                    {" · "}
+                                    <span className="text-accent">
+                                      {msg.telemetry.tokensSavedPercent}% tokens saved
+                                    </span>
+                                  </>
+                                )}
+                              </span>
                             )}
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          <div className="flex shrink-0 items-center gap-2">
                             {isThisMsgStreaming && (
                               <button
                                 type="button"
                                 onClick={stopSequentialStream}
-                                className="rounded border border-accent/50 bg-[#fbeae4]/50 px-2.5 py-1 font-mono text-[10px] font-medium text-accent transition-colors hover:bg-[#fbeae4]"
+                                className="rounded-md px-2 py-1 font-mono text-[11px] font-medium text-accent transition-colors hover:bg-[#fbeae4]/50"
                               >
-                                Skip animation ⏭
+                                Skip ⏭
                               </button>
                             )}
 
@@ -2639,72 +2644,59 @@ function ProjectWorkspaceContent() {
                                 <button
                                   type="button"
                                   onClick={() => toggleContextDrawer(msg.id)}
-                                  className="rounded border border-line-strong bg-paper px-2.5 py-1 font-mono text-[10px] font-medium text-ink transition-colors hover:border-ink hover:text-accent"
+                                  className="rounded-md px-2.5 py-1 font-mono text-[11px] text-muted transition-colors hover:bg-sunken hover:text-ink"
                                 >
                                   {isContextOpen
-                                    ? "Hide AST Context ▲"
-                                    : `Inspect Retrieved AST (${
+                                    ? "Hide AST ▴"
+                                    : `AST Context (${
                                         msg.retrievedFunctions?.length || 0
-                                      }) ▼`}
+                                      }) ▾`}
                                 </button>
                               )}
                           </div>
                         </div>
 
-                        {/* Collapsible X-Ray Drawer: Which exact AST functions were sent to the LLM */}
+                        {/* Collapsible X-Ray Drawer: Only visible when toggled */}
                         <AnimatePresence>
                           {isContextOpen && msg.telemetry && (
                             <motion.div
                               initial={{ opacity: 0, height: 0 }}
                               animate={{ opacity: 1, height: "auto" }}
                               exit={{ opacity: 0, height: 0 }}
-                              className="mt-3 overflow-hidden rounded-lg border border-line-strong bg-paper p-4"
+                              className="overflow-hidden rounded-xl border border-line bg-surface p-3.5"
                             >
-                              <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]">
-                                <span className="font-semibold uppercase tracking-wider text-ink">
-                                  RAG Context X-Ray · Sent{" "}
-                                  {msg.telemetry.tokensSent.toLocaleString()}{" "}
+                              <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[10.5px] text-muted">
+                                <span>
+                                  Sent{" "}
+                                  <strong className="text-ink">
+                                    {msg.telemetry.tokensSent.toLocaleString()}
+                                  </strong>{" "}
                                   tokens instead of{" "}
                                   {msg.telemetry.fullRepoTokens.toLocaleString()}{" "}
                                   full-repo tokens
                                 </span>
-                                <span className="text-muted">
-                                  Engine: {msg.telemetry.engine}
-                                </span>
+                                <span>{msg.telemetry.retrievalMethod}</span>
                               </div>
 
                               {msg.retrievedFunctions?.length > 0 && (
-                                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
                                   {msg.retrievedFunctions.map((fn) => (
                                     <div
                                       key={fn.id}
-                                      className="flex items-start justify-between gap-2 rounded-lg border border-line bg-surface p-2.5 font-mono text-xs"
+                                      className="flex items-center justify-between gap-2 rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs"
                                     >
                                       <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-1.5">
-                                          <span className="truncate font-semibold text-ink">
-                                            {fn.name}()
-                                          </span>
-                                          <span className="rounded bg-sunken px-1.5 py-0.5 text-[9px] text-accent">
-                                            {fn.criticality}
-                                          </span>
+                                        <div className="truncate font-semibold text-ink">
+                                          {fn.name}()
                                         </div>
-                                        <div className="mt-0.5 truncate text-[10px] text-muted">
-                                          {fn.file}:L{fn.startLine}–L{fn.endLine}{" "}
-                                          ({fn.lineCount}L ·{" "}
-                                          {fn.blastRadiusPercent}% blast)
+                                        <div className="truncate text-[10px] text-muted">
+                                          {fn.file}:L{fn.startLine}–L{fn.endLine}
                                         </div>
-                                        {fn.matchReasons?.length > 0 && (
-                                          <div className="mt-1 truncate text-[10px] text-ink-soft">
-                                            Matched:{" "}
-                                            {fn.matchReasons.join(" · ")}
-                                          </div>
-                                        )}
                                       </div>
                                       <button
                                         type="button"
                                         onClick={() => openFunctionInGraph(fn.id)}
-                                        className="shrink-0 rounded border border-line-strong bg-paper px-2 py-1 text-[10px] text-ink hover:border-ink hover:text-accent"
+                                        className="shrink-0 rounded border border-line px-2 py-0.5 text-[10px] text-ink-soft hover:border-ink hover:text-accent"
                                       >
                                         Graph →
                                       </button>
@@ -2712,143 +2704,107 @@ function ProjectWorkspaceContent() {
                                   ))}
                                 </div>
                               )}
-
-                              {msg.neighborStubs?.length > 0 && (
-                                <div className="mt-3 border-t border-line pt-2.5">
-                                  <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
-                                    1-Hop Connected Neighbor Stubs (Signature
-                                    Only):
-                                  </div>
-                                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                                    {msg.neighborStubs.map((nb) => (
-                                      <button
-                                        key={nb.id}
-                                        type="button"
-                                        onClick={() => openFunctionInGraph(nb.id)}
-                                        className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10px] text-ink-soft hover:border-ink hover:text-accent"
-                                      >
-                                        {nb.name}() · {nb.relation}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
                             </motion.div>
                           )}
                         </AnimatePresence>
 
-                        {/* Interactive Call-Chain Stepper Strip */}
-                        {msg.callChain?.length > 1 && (
-                          <div className="mt-3 rounded-lg border border-line bg-paper p-3">
-                            <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-muted">
-                              <span>
-                                Traced AST Execution Path (Click any node to
-                                open in Graph Explorer)
-                              </span>
-                              <span>{msg.callChain.length} steps</span>
-                            </div>
-                            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                              {msg.callChain.map((step, idx) => (
-                                <div
-                                  key={`${step.id}-${idx}`}
-                                  className="flex items-center gap-1.5"
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => openFunctionInGraph(step.id)}
-                                    className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-surface px-2.5 py-1 font-mono text-xs text-ink transition-colors hover:border-accent hover:text-accent"
-                                  >
-                                    <span className="text-[10px] font-semibold text-accent">
-                                      {idx + 1}
-                                    </span>
-                                    <span className="font-medium">
-                                      {step.name}()
-                                    </span>
-                                    <span className="text-[10px] text-muted">
-                                      {step.file.split("/").pop()}
-                                    </span>
-                                  </button>
-                                  {idx < msg.callChain.length - 1 && (
-                                    <span className="font-mono text-xs text-muted">
-                                      →
-                                    </span>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Rendered Markdown Answer Body (Sequential Streaming) */}
-                        <div className="mt-4">
+                        {/* Primary Answer Body (Front & Center) */}
+                        <div className="pl-7">
                           <RagMarkdownContent
                             content={displayedMarkdown}
                             isStreaming={isThisMsgStreaming}
                           />
-                        </div>
 
-                        {/* Special One-Click Redirect Card when user asks for Detailed / Full Project Report */}
-                        {!isThisMsgStreaming && msg.redirectAction && (
-                          <div className="mt-4 flex flex-col items-start justify-between gap-4 rounded-xl border border-[#c8502a] bg-[#fbeae4]/45 p-4 sm:flex-row sm:items-center">
-                            <div>
-                              <div className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
-                                Dedicated Reporting Module · Section 04
+                          {/* Special One-Click Redirect Card when user asks for Report */}
+                          {!isThisMsgStreaming && msg.redirectAction && (
+                            <div className="mt-4 flex flex-col items-start justify-between gap-3 rounded-xl border border-[#c8502a]/50 bg-[#fbeae4]/40 p-4 sm:flex-row sm:items-center">
+                              <div>
+                                <div className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+                                  Section 04 · Project Reports
+                                </div>
+                                <div className="mt-0.5 text-sm font-medium text-ink">
+                                  {msg.redirectAction.description}
+                                </div>
                               </div>
-                              <div className="mt-0.5 text-sm font-semibold text-ink">
-                                {msg.redirectAction.description}
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setActiveSection(
-                                  msg.redirectAction.targetSection || "reports"
-                                )
-                              }
-                              className="inline-flex shrink-0 items-center gap-2 rounded-md bg-ink px-4 py-2.5 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft"
-                            >
-                              {msg.redirectAction.buttonLabel}
-                            </button>
-                          </div>
-                        )}
-
-                        {/* Suggested Contextual Follow-Up Chips */}
-                        {!isThisMsgStreaming &&
-                          msg.suggestedFollowUps?.length > 0 && (
-                            <div className="mt-4 border-t border-line pt-3">
-                              <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
-                                Continue Tracing (Uses Pinned Memory):
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {msg.suggestedFollowUps.map((followUp) => (
-                                  <button
-                                    key={followUp}
-                                    type="button"
-                                    disabled={askingRag}
-                                    onClick={() =>
-                                      handleAskSubmit(null, followUp)
-                                    }
-                                    className="rounded-md border border-line-strong bg-paper px-3 py-1.5 font-mono text-xs text-ink-soft transition-colors hover:border-ink hover:text-accent disabled:opacity-50"
-                                  >
-                                    {followUp} →
-                                  </button>
-                                ))}
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setActiveSection(
+                                    msg.redirectAction.targetSection || "reports"
+                                  )
+                                }
+                                className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-ink px-4 py-2 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft"
+                              >
+                                {msg.redirectAction.buttonLabel}
+                              </button>
                             </div>
                           )}
+
+                          {/* Quiet Inline Flow Path + Follow-Up Pills (Shown Only After Answer) */}
+                          {!isThisMsgStreaming &&
+                            (cleanCallChain.length > 1 ||
+                              msg.suggestedFollowUps?.length > 0) && (
+                              <div className="mt-4 space-y-2.5 border-t border-line/70 pt-3">
+                                {cleanCallChain.length > 1 && (
+                                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                                    <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                                      Path:
+                                    </span>
+                                    {cleanCallChain.map((step, idx) => (
+                                      <span
+                                        key={`${step.id}-${idx}`}
+                                        className="inline-flex items-center gap-1.5"
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            openFunctionInGraph(step.id)
+                                          }
+                                          className="font-mono text-[11px] font-medium text-ink-soft underline decoration-line-strong underline-offset-2 transition-colors hover:text-accent hover:decoration-accent"
+                                          title={step.file}
+                                        >
+                                          {step.name}()
+                                        </button>
+                                        {idx < cleanCallChain.length - 1 && (
+                                          <span className="text-[11px] text-faint">
+                                            →
+                                          </span>
+                                        )}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {msg.suggestedFollowUps?.length > 0 && (
+                                  <div className="flex flex-wrap gap-2">
+                                    {msg.suggestedFollowUps
+                                      .slice(0, 2)
+                                      .map((followUp) => (
+                                        <button
+                                          key={followUp}
+                                          type="button"
+                                          disabled={askingRag}
+                                          onClick={() =>
+                                            handleAskSubmit(null, followUp)
+                                          }
+                                          className="rounded-full border border-line bg-surface px-3 py-1 text-xs text-ink-soft transition-colors hover:border-ink hover:text-ink disabled:opacity-50"
+                                        >
+                                          {followUp}
+                                        </button>
+                                      ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                        </div>
                       </div>
                     );
                   })}
 
                   {askingRag && (
-                    <div className="rounded-2xl border border-line-strong bg-surface p-5 shadow-sm">
-                      <div className="flex items-center gap-3 font-mono text-xs text-ink">
-                        <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
-                        <span>
-                          Filtering stop words, matching AST symbols &
-                          generating Groq LLM response…
-                        </span>
-                      </div>
+                    <div className="flex items-center gap-2.5 pl-1 text-xs text-muted">
+                      <span className="h-2 w-2 animate-ping rounded-full bg-accent" />
+                      <span>Searching AST symbols &amp; writing answer…</span>
                     </div>
                   )}
 
@@ -2858,46 +2814,43 @@ function ProjectWorkspaceContent() {
             </div>
 
             {/* 3. FIXED BOTTOM LLM PROMPT DOCK (ALWAYS VISIBLE WITHOUT PAGE SCROLL) */}
-            <div className="shrink-0 border-t border-line bg-surface px-6 py-3">
+            <div className="shrink-0 border-t border-line bg-paper px-6 py-3">
               <form
                 onSubmit={(e) => handleAskSubmit(e)}
                 className="mx-auto max-w-3xl"
               >
-                <div className="flex items-center gap-2 rounded-xl border border-line-strong bg-paper px-3.5 py-2 shadow-sm transition-colors focus-within:border-ink">
-                  <span className="font-mono text-xs font-semibold text-accent">
-                    ❯
-                  </span>
+                <div className="flex items-center gap-2 rounded-2xl border border-line-strong bg-surface px-4 py-2 shadow-sm transition-colors focus-within:border-ink">
                   <input
                     type="text"
                     value={askInput}
                     onChange={(e) => setAskInput(e.target.value)}
                     disabled={askingRag}
-                    placeholder={`Ask anything about ${analysis.fullName} (functions, login flow, blast radius, dependencies)…`}
-                    className="h-8 flex-1 bg-transparent font-mono text-xs text-ink placeholder:text-faint focus:outline-none disabled:opacity-60"
+                    placeholder={`Ask anything about ${analysis.repoName}…`}
+                    className="h-9 flex-1 bg-transparent text-[13.5px] text-ink placeholder:text-faint focus:outline-none disabled:opacity-60"
                   />
                   {streamingMsgId && (
                     <button
                       type="button"
                       onClick={stopSequentialStream}
-                      className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-line-strong bg-surface px-3 font-mono text-[11px] font-medium text-ink transition-colors hover:border-ink"
+                      className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-line px-3 text-xs font-medium text-ink-soft transition-colors hover:border-ink hover:text-ink"
                     >
-                      Finish stream
+                      Finish
                     </button>
                   )}
                   <button
                     type="submit"
                     disabled={askingRag || !askInput.trim()}
-                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-ink px-4 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft disabled:opacity-40"
+                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-ink px-4 text-xs font-medium text-paper transition-colors hover:bg-ink-soft disabled:opacity-35"
                   >
-                    {askingRag ? "Thinking…" : "Ask Codebase →"}
+                    {askingRag ? "Thinking…" : "Ask →"}
                   </button>
                 </div>
-                <div className="mt-1.5 flex items-center justify-between px-1 font-mono text-[10px] text-muted">
+                <div className="mt-1.5 flex items-center justify-between px-2 font-mono text-[10px] text-faint">
                   <span>
-                    AST RAG sends only matched functions · Whole-repo reports
-                    auto-redirect to Section 04
+                    Graph-aware AST RAG · Whole-project reports redirect to
+                    Section 04
                   </span>
-                  <span>Enter ↵ to send</span>
+                  <span>Enter ↵</span>
                 </div>
               </form>
             </div>

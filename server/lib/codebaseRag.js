@@ -1033,4 +1033,7 @@ async function answerCodebaseQuestion({
 module.exports = {
   answerCodebaseQuestion,
   getGroqConfig,
+  isUiPrimitiveFunction,
+  extractCompactCodeHints,
+  estimateTokens,
 };

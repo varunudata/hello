@@ -18,8 +18,10 @@ const {
   getExtension,
 } = require("../lib/astEngine");
 const { answerCodebaseQuestion } = require("../lib/codebaseRag");
+const { generateBriefProjectReport } = require("../lib/projectReports");
 
 const router = express.Router();
+const inFlightBriefReports = new Map();
 const JWT_SECRET =
   process.env.JWT_SECRET || "archon_ast_engine_secret_key_change_in_production";
 
@@ -1018,6 +1020,10 @@ router.post("/analyze", requireAuth, async (req, res) => {
       syncProjectToLocalMirror(savedProject);
     }
 
+    // Trigger Brief Overview Report auto-generation in the background right after indexing
+    // so Section 04 is ready immediately using Groq's best model (Detailed stays on-demand).
+    scheduleBriefReportGeneration(savedProject, analysis);
+
     return res.status(201).json({
       status: "INDEXED",
       project: savedProject,
@@ -1033,6 +1039,169 @@ router.post("/analyze", requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * Shared helper to load an authorized project and normalize its analysis payload.
+ */
+async function loadAuthorizedProjectWithAnalysis(projectId, userId) {
+  let project = readFallbackProjects().find(
+    (p) => p.id === projectId && p.userId === userId
+  );
+
+  if (!project || !project.analysisData) {
+    try {
+      const dbProj = await withFastTimeout(
+        () =>
+          prisma.repository.findFirst({
+            where: { id: projectId, userId },
+          }),
+        4500
+      );
+      if (dbProj) {
+        project = dbProj;
+        syncProjectToLocalMirror(dbProj);
+      }
+    } catch {
+      // keep local project if any
+    }
+  }
+
+  if (!project) return null;
+
+  const analysis = project.analysisData || {
+    repoName: project.name,
+    fullName: project.fullName,
+    repoUrl: project.repoUrl,
+    description: project.description,
+    defaultBranch: project.defaultBranch || "main",
+    primaryLanguage: project.primaryLanguage || "TypeScript",
+    fileCount: project.fileCount || 0,
+    functionCount: project.functionCount || 0,
+    packageCount: project.packageCount || 0,
+    dependencyCount: project.dependencyCount || 0,
+    totalLines: project.totalLines || 0,
+    astNodeCount: project.astNodeCount || 0,
+    healthScore: project.healthScore || 90,
+    languages: [],
+    packages: [],
+    files: [],
+    functions: [],
+    functionEdges: [],
+  };
+
+  return { project, analysis };
+}
+
+/**
+ * Persists a generated Brief Overview Report into `analysisData.reports.brief`
+ * across both the local JSON mirror and Neon PostgreSQL.
+ */
+async function persistBriefReport(project, briefReport) {
+  if (!project || !briefReport || briefReport?.meta?.model === "AST Fallback") {
+    return;
+  }
+
+  const nextAnalysisData = {
+    ...(project.analysisData || {}),
+    reports: {
+      ...(project.analysisData?.reports || {}),
+      brief: briefReport,
+    },
+  };
+
+  const updatedProject = {
+    ...project,
+    analysisData: nextAnalysisData,
+    updatedAt: new Date().toISOString(),
+  };
+
+  syncProjectToLocalMirror(updatedProject);
+
+  try {
+    await withFastTimeout(
+      () =>
+        prisma.repository.update({
+          where: { id: project.id },
+          data: { analysisData: nextAnalysisData },
+        }),
+      4500
+    );
+  } catch {
+    // Local mirror already holds the persisted report if NeonDB is offline
+  }
+}
+
+/**
+ * Deduplicated generator for the automatic Brief Overview Report.
+ */
+function ensureBriefReport(project, analysis, force = false) {
+  const existing = project?.analysisData?.reports?.brief;
+  if (!force && existing && existing?.meta?.model !== "AST Fallback") {
+    return Promise.resolve({ report: existing, cached: true });
+  }
+
+  if (!force && inFlightBriefReports.has(project.id)) {
+    return inFlightBriefReports.get(project.id);
+  }
+
+  const task = (async () => {
+    try {
+      const report = await generateBriefProjectReport(analysis);
+      await persistBriefReport(project, report);
+      return { report, cached: false };
+    } finally {
+      inFlightBriefReports.delete(project.id);
+    }
+  })();
+
+  inFlightBriefReports.set(project.id, task);
+  return task;
+}
+
+function scheduleBriefReportGeneration(project, analysis) {
+  if (!project?.id || !analysis) return;
+  setImmediate(() => {
+    ensureBriefReport(project, analysis, true).catch((err) => {
+      console.warn("[Background Brief Report error]:", err.message);
+    });
+  });
+}
+
+// POST /api/projects/:id/reports/brief — Auto-generate or return cached Brief Overview Report
+router.post("/:id/reports/brief", requireAuth, async (req, res) => {
+  try {
+    const force = Boolean(req.body?.force);
+    const loaded = await loadAuthorizedProjectWithAnalysis(
+      req.params.id,
+      req.user.id
+    );
+
+    if (!loaded) {
+      return res.status(404).json({
+        error: "PROJECT_NOT_FOUND",
+        message: "Project not found in your workspace.",
+      });
+    }
+
+    const { report, cached } = await ensureBriefReport(
+      loaded.project,
+      loaded.analysis,
+      force
+    );
+
+    return res.status(200).json({
+      status: "OK",
+      cached,
+      report,
+    });
+  } catch (err) {
+    console.error("[POST /api/projects/:id/reports/brief ERROR]:", err);
+    return res.status(500).json({
+      error: "BRIEF_REPORT_FAILED",
+      message: "Failed to generate the brief overview report. Please try again.",
+    });
+  }
+});
+
 // POST /api/projects/:id/ask — Graph-Aware AST RAG & Conversational Q&A (Section 03)
 router.post("/:id/ask", requireAuth, async (req, res) => {
   try {
@@ -1044,56 +1213,20 @@ router.post("/:id/ask", requireAuth, async (req, res) => {
       });
     }
 
-    // Load project from local mirror first for < 5ms latency, fallback to NeonDB
-    let project = readFallbackProjects().find(
-      (p) => p.id === req.params.id && p.userId === req.user.id
+    const loaded = await loadAuthorizedProjectWithAnalysis(
+      req.params.id,
+      req.user.id
     );
 
-    if (!project || !project.analysisData) {
-      try {
-        project = await withFastTimeout(
-          () =>
-            prisma.repository.findFirst({
-              where: { id: req.params.id, userId: req.user.id },
-            }),
-          4500
-        );
-        if (project) syncProjectToLocalMirror(project);
-      } catch {
-        // keep local project if any
-      }
-    }
-
-    if (!project) {
+    if (!loaded) {
       return res.status(404).json({
         error: "PROJECT_NOT_FOUND",
         message: "Project not found in your workspace.",
       });
     }
 
-    const analysis = project.analysisData || {
-      repoName: project.name,
-      fullName: project.fullName,
-      repoUrl: project.repoUrl,
-      description: project.description,
-      defaultBranch: project.defaultBranch || "main",
-      primaryLanguage: project.primaryLanguage || "TypeScript",
-      fileCount: project.fileCount || 0,
-      functionCount: project.functionCount || 0,
-      packageCount: project.packageCount || 0,
-      dependencyCount: project.dependencyCount || 0,
-      totalLines: project.totalLines || 0,
-      astNodeCount: project.astNodeCount || 0,
-      healthScore: project.healthScore || 90,
-      languages: [],
-      packages: [],
-      files: [],
-      functions: [],
-      functionEdges: [],
-    };
-
     const result = await answerCodebaseQuestion({
-      analysis,
+      analysis: loaded.analysis,
       question: String(question).trim(),
       history: Array.isArray(history) ? history : [],
       memory: memory || {},

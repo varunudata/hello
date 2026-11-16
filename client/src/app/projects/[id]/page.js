@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Logo from "../../../components/Logo";
 import { API_BASE } from "../../../lib/api";
@@ -37,10 +37,64 @@ const NAV_ITEMS = [
     num: "04",
     label: "Project Reports",
     sub: "Brief & deep developer audits",
-    badge: "SOON",
-    active: false,
+    badge: "AI",
+    active: true,
   },
 ];
+
+function buildBriefReportMarkdown(report, analysis) {
+  if (!report) return "";
+  const lines = [
+    `# ${analysis?.fullName || report.repoFullName} — Brief Overview Report`,
+    `> ${report.headline || ""}`,
+    ``,
+    `## 1. What This Project Is`,
+    report.whatIsProject || "",
+    ``,
+    `## 2. Problem & Solution`,
+    `- **Problem:** ${report.problemAndSolution?.problem || ""}`,
+    `- **Solution:** ${report.problemAndSolution?.solution || ""}`,
+    ...(report.problemAndSolution?.idealUseCases?.length
+      ? [`- **Use Cases:** ${report.problemAndSolution.idealUseCases.join(", ")}`]
+      : []),
+    ``,
+    `## 3. Project Metrics Snapshot`,
+    `- Files: ${analysis?.fileCount || 0} | Functions: ${analysis?.functionCount || 0} | Packages: ${analysis?.packageCount || 0} | Lines: ${(analysis?.totalLines || 0).toLocaleString()} | Health Score: ${analysis?.healthScore || 90}%`,
+    ``,
+    `## 4. Complete Workflow (${report.architectureDesign?.pattern || ""})`,
+    report.completeWorkflow?.overview || "",
+    ...(report.completeWorkflow?.steps || []).map(
+      (s) => `${s.stepNumber}. **[${s.actor}] ${s.title}**: ${s.summary}${s.keyComponent ? ` (\`${s.keyComponent}\`)` : ""}`
+    ),
+    ``,
+    `## 5. Tech Stack Used`,
+    ...(report.techStack || []).flatMap((cat) => [
+      `### ${cat.category}`,
+      ...cat.items.map((it) => `- **${it.name}**: ${it.roleInProject}`),
+    ]),
+    ``,
+    `## 6. Key Files & Modules`,
+    ...(report.filesAndModules || []).flatMap((mod) => [
+      `### ${mod.folderOrCategory}`,
+      ...mod.files.map((f) => `- \`${f.path}\`: ${f.role}`),
+    ]),
+    ``,
+    `## 7. Main Functions Explained Simply`,
+    ...(report.mainFunctions || []).map(
+      (fn) => `- **\`${fn.name}()\`** (\`${fn.file}\`): ${fn.whatItDoes}`
+    ),
+  ];
+
+  if (report.keyTakeaways?.length) {
+    lines.push(
+      ``,
+      `## 8. Key Takeaways`,
+      ...report.keyTakeaways.map((tk) => `- **[${tk.tag}] ${tk.title}**: ${tk.detail}`)
+    );
+  }
+
+  return lines.filter((l) => l !== undefined).join("\n");
+}
 
 function renderInlineMarkdown(text) {
   if (!text) return null;
@@ -468,10 +522,18 @@ function ProjectWorkspaceContent() {
   const router = useRouter();
   const projectId = params?.id;
 
+  const searchParams = useSearchParams();
+  const initialTabParam = searchParams.get("tab");
+  const initialSection = ["overview", "graph", "ask", "reports"].includes(
+    initialTabParam
+  )
+    ? initialTabParam
+    : "overview";
+
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [activeSection, setActiveSection] = useState("overview");
+  const [activeSection, setActiveSection] = useState(initialSection);
 
   // Graph Explorer states
   const [selectedFnId, setSelectedFnId] = useState(null);
@@ -495,6 +557,14 @@ function ProjectWorkspaceContent() {
     sessionDigest: "",
   });
   const [expandedContextIds, setExpandedContextIds] = useState({});
+  // Project Reports (Section 04) states
+  const [reportMode, setReportMode] = useState("brief");
+  const [briefReport, setBriefReport] = useState(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefError, setBriefError] = useState("");
+  const [briefCached, setBriefCached] = useState(false);
+  const [copiedReportMd, setCopiedReportMd] = useState(false);
+
   const askEndRef = useRef(null);
   const askScrollContainerRef = useRef(null);
   const streamTimerRef = useRef(null);
@@ -510,14 +580,6 @@ function ProjectWorkspaceContent() {
   useEffect(() => {
     let token = null;
     try {
-      const sp = new URLSearchParams(window.location.search);
-      const tabParam = sp.get("tab");
-      if (
-        tabParam &&
-        ["overview", "graph", "ask", "reports"].includes(tabParam)
-      ) {
-        setActiveSection(tabParam);
-      }
       token = localStorage.getItem("archon_token");
     } catch {
       // ignore
@@ -532,6 +594,9 @@ function ProjectWorkspaceContent() {
       setError("");
       setProject(null);
       setSelectedFnId(null);
+      setBriefReport(null);
+      setBriefError("");
+      setBriefCached(false);
       try {
         const res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
           cache: "no-store",
@@ -548,6 +613,11 @@ function ProjectWorkspaceContent() {
           return;
         }
         setProject(data.project);
+        const existingBrief = data.project?.analysisData?.reports?.brief || null;
+        if (existingBrief) {
+          setBriefReport(existingBrief);
+          setBriefCached(true);
+        }
         const fns = data.project?.analysisData?.functions || [];
         if (fns.length > 0) {
           setSelectedFnId(fns[0].id);
@@ -1007,6 +1077,85 @@ function ProjectWorkspaceContent() {
       ),
     }));
   }
+
+  const fetchBriefReport = useCallback(
+    async (force = false) => {
+      if (!projectId || briefLoading) return;
+      setBriefLoading(true);
+      setBriefError("");
+
+      try {
+        const token = localStorage.getItem("archon_token") || "";
+        const res = await fetch(
+          `${API_BASE}/api/projects/${projectId}/reports/brief`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ force }),
+          }
+        );
+
+        const data = await res.json();
+        if (!res.ok || !data?.report) {
+          setBriefError(
+            data?.message ||
+              "Unable to generate brief overview report right now."
+          );
+          return;
+        }
+
+        setBriefReport(data.report);
+        setBriefCached(Boolean(data.cached));
+      } catch {
+        setBriefError(
+          "Could not reach the AST backend server to generate the brief report."
+        );
+      } finally {
+        setBriefLoading(false);
+      }
+    },
+    [projectId, briefLoading]
+  );
+
+  async function handleCopyBriefMarkdown() {
+    if (!briefReport) return;
+    const md = buildBriefReportMarkdown(briefReport, analysis);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopiedReportMd(true);
+      setTimeout(() => setCopiedReportMd(false), 2200);
+    } catch {
+      // ignore clipboard restrictions
+    }
+  }
+
+  useEffect(() => {
+    if (
+      activeSection !== "reports" ||
+      reportMode !== "brief" ||
+      !project?.id ||
+      briefReport ||
+      briefLoading ||
+      briefError
+    ) {
+      return;
+    }
+    const timerId = setTimeout(() => {
+      fetchBriefReport(false);
+    }, 0);
+    return () => clearTimeout(timerId);
+  }, [
+    activeSection,
+    reportMode,
+    project?.id,
+    briefReport,
+    briefLoading,
+    briefError,
+    fetchBriefReport,
+  ]);
 
   function handleCanvasMouseDown(e) {
     if (e.target.closest("[data-fn-node]")) return;
@@ -2858,147 +3007,765 @@ function ProjectWorkspaceContent() {
         )}
 
         {/* ========================================================= */}
-        {/* SECTION 4: PROJECT REPORTS (COMING SOON STATE)            */}
+        {/* SECTION 4: PROJECT REPORTS (BRIEF OVERVIEW + ON-DEMAND)   */}
         {/* ========================================================= */}
         {activeSection === "reports" && (
-          <main className="mx-auto w-full max-w-5xl p-8 md:py-14">
-            <div className="rounded-2xl border border-line-strong bg-surface p-8 md:p-10">
-              <div className="inline-flex items-center gap-2 rounded-full border border-line-strong bg-sunken px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
-                <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                Section 04 · Coming Soon
+          <main className="mx-auto w-full max-w-5xl space-y-8 p-6 md:px-10 md:py-10">
+            {/* Top Report Mode Switcher & Actions Bar */}
+            <div className="flex flex-col justify-between gap-4 rounded-2xl border border-line-strong bg-surface p-6 shadow-sm md:flex-row md:items-center">
+              <div>
+                <div className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
+                  <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                  Section 04 · Project Intelligence Reports
+                </div>
+                <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-ink">
+                  {analysis.fullName}
+                </h1>
+                <p className="mt-1 text-xs text-muted">
+                  Auto-generated Brief Overview for quick understanding &amp; presentations, plus on-demand Detailed Developer Audit.
+                </p>
               </div>
 
-              <h1 className="mt-4 text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
-                Automated Codebase & Architecture Reports
-              </h1>
-              <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
-                Archon generates two distinct intelligence reports from your
-                indexed AST graph: a concise{" "}
-                <strong className="font-medium text-ink">
-                  Brief Executive & Tech-Stack Summary
-                </strong>{" "}
-                and an exhaustive{" "}
-                <strong className="font-medium text-ink">
-                  Deep Developer Code & Dependency Audit Report
-                </strong>
-                . This module is marked as Coming Soon and will be unlocked in
-                the next milestone.
-              </p>
-
-              <div className="mt-8 grid gap-6 md:grid-cols-2">
-                {/* Report Type 1: Brief & Executive Summary */}
-                <div className="flex flex-col justify-between rounded-xl border border-line-strong bg-paper p-6">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
-                        Report Mode I · Brief Overview
-                      </span>
-                      <span className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10px] uppercase text-muted">
-                        Coming Soon
-                      </span>
-                    </div>
-
-                    <h2 className="mt-3 text-lg font-semibold text-ink">
-                      Executive & Product Tech-Stack Brief
-                    </h2>
-                    <p className="mt-1.5 text-xs leading-relaxed text-muted">
-                      Designed for rapid onboarding, product managers, and
-                      architectural reviews to understand the repository at a
-                      glance.
-                    </p>
-
-                    <ul className="mt-4 space-y-2.5 border-t border-line pt-4 text-xs text-ink-soft">
-                      <li className="flex items-start gap-2">
-                        <span className="font-mono text-accent">01</span>
-                        <span>
-                          <strong>What the Project Is & Problem Solved:</strong>{" "}
-                          Clear synthesis of the application domain and core
-                          capabilities.
-                        </span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="font-mono text-accent">02</span>
-                        <span>
-                          <strong>Tech Stack & Runtime Architecture:</strong>{" "}
-                          Languages ({analysis.primaryLanguage}), frameworks,
-                          and system boundaries.
-                        </span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="font-mono text-accent">03</span>
-                        <span>
-                          <strong>High-Level Health & Module Map:</strong>{" "}
-                          Summary of {analysis.fileCount} files and{" "}
-                          {analysis.functionCount} AST functions.
-                        </span>
-                      </li>
-                    </ul>
-                  </div>
-
-                  <div className="mt-6 rounded-lg border border-line bg-sunken px-4 py-2.5 text-center font-mono text-xs text-muted">
-                    Brief Report Generator — Coming Soon
-                  </div>
-                </div>
-
-                {/* Report Type 2: Deep Developer Audit */}
-                <div className="flex flex-col justify-between rounded-xl border border-line-strong bg-paper p-6">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs font-semibold uppercase tracking-wider text-accent">
-                        Report Mode II · Deep Developer Audit
-                      </span>
-                      <span className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10px] uppercase text-muted">
-                        Coming Soon
-                      </span>
-                    </div>
-
-                    <h2 className="mt-3 text-lg font-semibold text-ink">
-                      Deep Function, Package & Workflow Analysis
-                    </h2>
-                    <p className="mt-1.5 text-xs leading-relaxed text-muted">
-                      Built for engineers who want to analyze every single line,
-                      dependency version, and execution workflow in the
-                      repository.
-                    </p>
-
-                    <ul className="mt-4 space-y-2.5 border-t border-line pt-4 text-xs text-ink-soft">
-                      <li className="flex items-start gap-2">
-                        <span className="font-mono text-accent">01</span>
-                        <span>
-                          <strong>Function-by-Function Deep Dive:</strong>{" "}
-                          Signatures, cyclomatic complexity, callers, callees,
-                          and exact blast radius across all{" "}
-                          {analysis.functionCount} functions.
-                        </span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="font-mono text-accent">02</span>
-                        <span>
-                          <strong>
-                            Packages, Versions & Best Alternatives:
-                          </strong>{" "}
-                          Audit of all {analysis.packageCount} packages, their
-                          versions, modern alternatives if any, or why the
-                          current choice is optimal.
-                        </span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="font-mono text-accent">03</span>
-                        <span>
-                          <strong>Major Execution Workflows:</strong>{" "}
-                          End-to-end call pipelines and architectural
-                          bottlenecks every developer must know.
-                        </span>
-                      </li>
-                    </ul>
-                  </div>
-
-                  <div className="mt-6 rounded-lg border border-line bg-sunken px-4 py-2.5 text-center font-mono text-xs text-muted">
-                    Deep Developer Report Generator — Coming Soon
-                  </div>
+              {/* Report Mode Switcher Pills */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-xl border border-line-strong bg-paper p-1">
+                  <button
+                    type="button"
+                    onClick={() => setReportMode("brief")}
+                    className={`rounded-lg px-3.5 py-2 font-mono text-xs transition-colors ${
+                      reportMode === "brief"
+                        ? "bg-ink font-medium text-paper"
+                        : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    01 · Brief Overview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReportMode("detailed")}
+                    className={`rounded-lg px-3.5 py-2 font-mono text-xs transition-colors ${
+                      reportMode === "detailed"
+                        ? "bg-ink font-medium text-paper"
+                        : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    02 · Detailed Audit
+                  </button>
                 </div>
               </div>
             </div>
+
+            {/* ======================================================= */}
+            {/* MODE I: BRIEF OVERVIEW REPORT (AUTO-GENERATED)          */}
+            {/* ======================================================= */}
+            {reportMode === "brief" && (
+              <>
+                {briefLoading && !briefReport && (
+                  <div className="space-y-6 rounded-2xl border border-line-strong bg-surface p-8">
+                    <div className="flex items-center gap-3">
+                      <span className="h-2.5 w-2.5 animate-ping rounded-full bg-accent" />
+                      <div className="font-mono text-xs uppercase tracking-wider text-ink">
+                        Synthesizing Brief Overview Report via Groq (`openai/gpt-oss-120b`)…
+                      </div>
+                    </div>
+                    <p className="max-w-xl text-sm leading-relaxed text-muted">
+                      Reading all {analysis.fileCount} source files, {analysis.functionCount} AST functions, and {analysis.packageCount} packages to build a clean overview, system workflow diagrams, tech stack guide, and plain-English function breakdown.
+                    </p>
+                    <div className="grid gap-4 pt-2 sm:grid-cols-3">
+                      <div className="h-24 animate-pulse rounded-xl bg-sunken" />
+                      <div className="h-24 animate-pulse rounded-xl bg-sunken" />
+                      <div className="h-24 animate-pulse rounded-xl bg-sunken" />
+                    </div>
+                  </div>
+                )}
+
+                {briefError && !briefLoading && (
+                  <div className="rounded-2xl border border-[#c8502a]/50 bg-[#fbeae4]/40 p-6">
+                    <div className="font-mono text-xs font-semibold uppercase tracking-wider text-accent">
+                      Brief Report Generation Failed
+                    </div>
+                    <p className="mt-1.5 text-sm text-ink">{briefError}</p>
+                    <button
+                      type="button"
+                      onClick={() => fetchBriefReport(true)}
+                      className="mt-4 rounded-lg bg-ink px-4 py-2 font-mono text-xs font-medium text-paper hover:bg-ink-soft"
+                    >
+                      Retry Generation →
+                    </button>
+                  </div>
+                )}
+
+                {briefReport && (
+                  <div className="space-y-8 pb-8">
+                    {/* Action Strip (Model, Cached Badge, Copy PPT/Docs, Regenerate) */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+                      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-muted">
+                        <span className="rounded-md border border-line-strong bg-surface px-2.5 py-1 text-ink">
+                          Model: {briefReport.meta?.model || "openai/gpt-oss-120b"}
+                        </span>
+                        <span className="rounded-md border border-line bg-surface px-2.5 py-1">
+                          {briefCached ? "Saved in workspace" : "Freshly generated"}
+                        </span>
+                        {briefReport.meta?.tokensUsed > 0 && (
+                          <span className="rounded-md border border-line bg-surface px-2.5 py-1">
+                            {briefReport.meta.tokensUsed.toLocaleString()} tokens
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleCopyBriefMarkdown}
+                          className="rounded-lg border border-line-strong bg-surface px-3.5 py-2 font-mono text-xs text-ink transition-colors hover:border-ink"
+                        >
+                          {copiedReportMd ? "Copied for Docs / PPT ✓" : "Copy for Docs / PPT"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={briefLoading}
+                          onClick={() => fetchBriefReport(true)}
+                          className="rounded-lg border border-line-strong bg-surface px-3.5 py-2 font-mono text-xs text-ink transition-colors hover:border-ink disabled:opacity-50"
+                        >
+                          {briefLoading ? "Regenerating…" : "↻ Regenerate Brief"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReportMode("detailed")}
+                          className="rounded-lg bg-ink px-3.5 py-2 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft"
+                        >
+                          Detailed Report →
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 1. WHAT THIS PROJECT IS + PROBLEM & SOLUTION + SNAPSHOT STATS */}
+                    <section className="space-y-6 rounded-2xl border border-line-strong bg-surface p-7 md:p-9">
+                      <div className="space-y-3">
+                        <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                          01 · Project Identity &amp; Purpose
+                        </div>
+                        <h2 className="text-xl font-semibold tracking-tight text-ink sm:text-2xl">
+                          {briefReport.headline}
+                        </h2>
+                        <div className="max-w-3xl space-y-3 text-[15px] leading-[1.75] text-[#2b2923]">
+                          {String(briefReport.whatIsProject || "")
+                            .split(/\n{2,}/)
+                            .filter(Boolean)
+                            .map((para, pIdx) => (
+                              <p key={pIdx}>{para}</p>
+                            ))}
+                        </div>
+                      </div>
+
+                      {/* Slide-Ready AST Metrics Strip */}
+                      <div className="grid grid-cols-2 gap-3 border-y border-line py-5 sm:grid-cols-5">
+                        <div className="rounded-xl border border-line bg-paper p-3.5">
+                          <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                            Source Files
+                          </div>
+                          <div className="mt-1 font-mono text-xl font-semibold text-ink">
+                            {analysis.fileCount}
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-line bg-paper p-3.5">
+                          <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                            AST Functions
+                          </div>
+                          <div className="mt-1 font-mono text-xl font-semibold text-accent">
+                            {analysis.functionCount}
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-line bg-paper p-3.5">
+                          <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                            Packages
+                          </div>
+                          <div className="mt-1 font-mono text-xl font-semibold text-ink">
+                            {analysis.packageCount}
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-line bg-paper p-3.5">
+                          <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                            Lines of Code
+                          </div>
+                          <div className="mt-1 font-mono text-xl font-semibold text-ink">
+                            {(analysis.totalLines || 0).toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="col-span-2 rounded-xl border border-line bg-paper p-3.5 sm:col-span-1">
+                          <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                            Health Score
+                          </div>
+                          <div className="mt-1 font-mono text-xl font-semibold text-sage">
+                            {analysis.healthScore || 90}%
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Language Share Bar */}
+                      {analysis.languages?.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-muted">
+                            <span>LANGUAGE COMPOSITION</span>
+                            <div className="flex flex-wrap gap-3">
+                              {analysis.languages.slice(0, 5).map((lang) => (
+                                <span key={lang.name} className="text-ink-soft">
+                                  {lang.name}{" "}
+                                  <strong className="text-ink">{lang.percentage}%</strong>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex h-2 w-full overflow-hidden rounded-full bg-sunken">
+                            {analysis.languages.slice(0, 5).map((lang, idx) => {
+                              const barColors = [
+                                "bg-ink",
+                                "bg-accent",
+                                "bg-[#2f6f4e]",
+                                "bg-[#8a5a19]",
+                                "bg-muted",
+                              ];
+                              return (
+                                <div
+                                  key={lang.name}
+                                  style={{ width: `${Math.max(4, lang.percentage)}%` }}
+                                  className={`${barColors[idx % barColors.length]} transition-all`}
+                                  title={`${lang.name}: ${lang.percentage}%`}
+                                />
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2-Column Problem & Solution Split */}
+                      <div className="grid gap-5 pt-2 md:grid-cols-2">
+                        <div className="rounded-xl border border-[#c8502a]/25 bg-[#fdf8f5] p-5 space-y-2">
+                          <div className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-accent">
+                            What Problem It Solves
+                          </div>
+                          <p className="text-[14px] leading-[1.7] text-[#2b2923]">
+                            {briefReport.problemAndSolution?.problem}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-[#2f6f4e]/25 bg-[#f6faf7] p-5 space-y-3">
+                          <div className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-[#2f6f4e]">
+                            How This Project Solves It
+                          </div>
+                          <p className="text-[14px] leading-[1.7] text-[#2b2923]">
+                            {briefReport.problemAndSolution?.solution}
+                          </p>
+                          {briefReport.problemAndSolution?.idealUseCases?.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 pt-1">
+                              {briefReport.problemAndSolution.idealUseCases.map((uc) => (
+                                <span
+                                  key={uc}
+                                  className="rounded-full border border-[#2f6f4e]/25 bg-surface px-2.5 py-0.5 text-[11.5px] font-medium text-ink-soft"
+                                >
+                                  {uc}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* 2. VISUAL SYSTEM ARCHITECTURE & COMPLETE WORKFLOW DESIGN */}
+                    <section className="space-y-7 rounded-2xl border border-line-strong bg-surface p-7 md:p-9">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-1.5">
+                          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                            02 · System Design &amp; Complete Workflow
+                          </div>
+                          <h2 className="text-xl font-semibold tracking-tight text-ink">
+                            How Everything Connects End-to-End
+                          </h2>
+                          {briefReport.completeWorkflow?.overview && (
+                            <p className="max-w-3xl text-[14px] leading-[1.7] text-muted">
+                              {briefReport.completeWorkflow.overview}
+                            </p>
+                          )}
+                        </div>
+                        {briefReport.architectureDesign?.pattern && (
+                          <span className="rounded-lg border border-line-strong bg-paper px-3 py-1.5 font-mono text-[11px] font-medium text-ink">
+                            {briefReport.architectureDesign.pattern}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* 2A. Visual Connected Layer Architecture Diagram */}
+                      {briefReport.architectureDesign?.layers?.length > 0 && (
+                        <div className="rounded-xl border border-line bg-paper p-5 space-y-4">
+                          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                            Architecture Blueprint Diagram
+                          </div>
+                          <div className="flex flex-col gap-3 lg:flex-row lg:items-stretch">
+                            {briefReport.architectureDesign.layers.map((layer, lIdx) => {
+                              const accents = [
+                                "border-t-ink",
+                                "border-t-accent",
+                                "border-t-[#2f6f4e]",
+                                "border-t-[#8a5a19]",
+                              ];
+                              return (
+                                <div
+                                  key={`${layer.layerName}-${lIdx}`}
+                                  className="flex flex-1 flex-col items-stretch gap-2 lg:flex-row lg:items-center"
+                                >
+                                  <div
+                                    className={`flex h-full flex-1 flex-col justify-between rounded-xl border border-line-strong border-t-[3px] bg-surface p-4 ${
+                                      accents[lIdx % accents.length]
+                                    }`}
+                                  >
+                                    <div>
+                                      <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
+                                        Layer 0{layer.stepOrder || lIdx + 1}
+                                      </div>
+                                      <div className="mt-1 text-sm font-semibold text-ink">
+                                        {layer.layerName}
+                                      </div>
+                                      <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">
+                                        {layer.role}
+                                      </p>
+                                    </div>
+                                    {(layer.technologies?.length > 0 ||
+                                      layer.keyFiles?.length > 0) && (
+                                      <div className="mt-3 flex flex-wrap gap-1 border-t border-line pt-2.5">
+                                        {layer.technologies?.slice(0, 3).map((t) => (
+                                          <span
+                                            key={t}
+                                            className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-ink"
+                                          >
+                                            {t}
+                                          </span>
+                                        ))}
+                                        {layer.keyFiles?.slice(0, 2).map((kf) => (
+                                          <span
+                                            key={kf}
+                                            className="truncate rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                                          >
+                                            {kf.split("/").pop()}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {lIdx < briefReport.architectureDesign.layers.length - 1 && (
+                                    <div className="flex shrink-0 items-center justify-center py-0.5 font-mono text-sm text-accent lg:px-0.5">
+                                      <span className="hidden lg:inline">→</span>
+                                      <span className="lg:hidden">↓</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2B. Visual Step-by-Step Workflow Pipeline */}
+                      {briefReport.completeWorkflow?.steps?.length > 0 && (
+                        <div className="space-y-4">
+                          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                            End-to-End Execution Pipeline
+                          </div>
+                          <div className="relative space-y-4 pl-6 before:absolute before:bottom-4 before:left-[15px] before:top-4 before:w-[1.5px] before:bg-line-strong">
+                            {briefReport.completeWorkflow.steps.map((step, sIdx) => (
+                              <div
+                                key={`${step.title}-${sIdx}`}
+                                className="relative rounded-xl border border-line bg-paper p-5 transition-colors hover:border-line-strong"
+                              >
+                                {/* Timeline Circle Node */}
+                                <span className="absolute -left-[25px] top-5 flex h-7 w-7 items-center justify-center rounded-full border border-line-strong bg-surface font-mono text-[11px] font-semibold text-accent shadow-xs">
+                                  {step.stepNumber || sIdx + 1}
+                                </span>
+
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex flex-wrap items-center gap-2.5">
+                                    <span className="rounded bg-ink px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-paper">
+                                      {step.actor}
+                                    </span>
+                                    <h3 className="text-[15px] font-semibold text-ink">
+                                      {step.title}
+                                    </h3>
+                                  </div>
+                                  {step.keyComponent && (
+                                    <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[11px] text-ink-soft">
+                                      {step.keyComponent}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <p className="mt-2 text-[14px] leading-[1.68] text-[#2b2923]">
+                                  {step.summary}
+                                </p>
+
+                                {step.output && (
+                                  <div className="mt-2.5 flex items-center gap-2 text-xs text-muted">
+                                    <span className="font-mono text-[10px] uppercase tracking-wider text-sage">
+                                      Output →
+                                    </span>
+                                    <span className="text-ink-soft">{step.output}</span>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2C. Visual Sub-Workflow Journey Cards */}
+                      {briefReport.completeWorkflow?.secondaryFlows?.length > 0 && (
+                        <div className="space-y-3 pt-1">
+                          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                            Key User &amp; Feature Journeys
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            {briefReport.completeWorkflow.secondaryFlows.map((flow, fIdx) => (
+                              <div
+                                key={`${flow.name}-${fIdx}`}
+                                className="rounded-xl border border-line bg-paper p-5 space-y-3"
+                              >
+                                <div>
+                                  <h4 className="text-sm font-semibold text-ink">
+                                    {flow.name}
+                                  </h4>
+                                  {flow.summary && (
+                                    <p className="mt-1 text-xs leading-relaxed text-muted">
+                                      {flow.summary}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {flow.steps.map((st, idx) => (
+                                    <div key={idx} className="flex items-center gap-2">
+                                      <span className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink-soft">
+                                        <span className="font-mono text-[10px] font-semibold text-accent">
+                                          {idx + 1}
+                                        </span>
+                                        <span>{st}</span>
+                                      </span>
+                                      {idx < flow.steps.length - 1 && (
+                                        <span className="font-mono text-xs text-muted">
+                                          →
+                                        </span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {/* 3. TECH STACK USED (PLAIN ENGLISH) */}
+                    {briefReport.techStack?.length > 0 && (
+                      <section className="space-y-5 rounded-2xl border border-line-strong bg-surface p-7 md:p-9">
+                        <div>
+                          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                            03 · Tech Stack Explained Simply
+                          </div>
+                          <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                            Tools, Libraries &amp; Why Each Exists
+                          </h2>
+                        </div>
+
+                        <div className="grid gap-5 md:grid-cols-2">
+                          {briefReport.techStack.map((group) => (
+                            <div
+                              key={group.category}
+                              className="rounded-xl border border-line bg-paper p-5 space-y-3.5"
+                            >
+                              <div className="border-b border-line pb-2.5">
+                                <div className="text-sm font-semibold text-ink">
+                                  {group.category}
+                                </div>
+                                {group.purposeSummary && (
+                                  <div className="mt-0.5 text-xs text-muted">
+                                    {group.purposeSummary}
+                                  </div>
+                                )}
+                              </div>
+                              <ul className="space-y-2.5">
+                                {group.items.map((item) => (
+                                  <li key={item.name} className="text-[13.5px] leading-relaxed">
+                                    <span className="mr-2 inline-block rounded bg-sunken px-2 py-0.5 font-mono text-[11.5px] font-medium text-ink">
+                                      {item.name}
+                                    </span>
+                                    <span className="text-[#2b2923]">
+                                      {item.roleInProject}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* 4. KEY FILES & MODULES BREAKDOWN */}
+                    {briefReport.filesAndModules?.length > 0 && (
+                      <section className="space-y-5 rounded-2xl border border-line-strong bg-surface p-7 md:p-9">
+                        <div>
+                          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                            04 · Project Structure &amp; Key Files
+                          </div>
+                          <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                            Where Important Logic Lives
+                          </h2>
+                        </div>
+
+                        <div className="space-y-5">
+                          {briefReport.filesAndModules.map((mod) => (
+                            <div
+                              key={mod.folderOrCategory}
+                              className="overflow-hidden rounded-xl border border-line bg-paper"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-sunken/70 px-5 py-3">
+                                <span className="text-sm font-semibold text-ink">
+                                  {mod.folderOrCategory}
+                                </span>
+                                {mod.summary && (
+                                  <span className="text-xs text-muted">{mod.summary}</span>
+                                )}
+                              </div>
+                              <div className="divide-y divide-line">
+                                {mod.files.map((f) => (
+                                  <div
+                                    key={f.path}
+                                    className="flex flex-col gap-1.5 px-5 py-3.5 sm:flex-row sm:items-baseline sm:gap-4"
+                                  >
+                                    <span className="shrink-0 font-mono text-xs font-medium text-ink sm:w-64 sm:truncate">
+                                      {f.path}
+                                    </span>
+                                    <p className="flex-1 text-[13.5px] leading-relaxed text-[#2b2923]">
+                                      {f.role}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* 5. MAIN FUNCTIONS EXPLAINED SIMPLY */}
+                    {briefReport.mainFunctions?.length > 0 && (
+                      <section className="space-y-5 rounded-2xl border border-line-strong bg-surface p-7 md:p-9">
+                        <div className="flex flex-wrap items-end justify-between gap-3">
+                          <div>
+                            <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                              05 · Core Functions Explained
+                            </div>
+                            <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                              Key Functions Behind the Project ({briefReport.mainFunctions.length})
+                            </h2>
+                          </div>
+                          <span className="font-mono text-[11px] text-muted">
+                            Click any function to inspect its AST graph or ask AI
+                          </span>
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                          {briefReport.mainFunctions.map((fnItem, idx) => {
+                            const matchedAstFn = allFunctions.find(
+                              (f) =>
+                                f.name.toLowerCase() === fnItem.name.toLowerCase() &&
+                                (!fnItem.file || f.file === fnItem.file)
+                            ) || allFunctions.find(
+                              (f) => f.name.toLowerCase() === fnItem.name.toLowerCase()
+                            );
+                            const critStyle = matchedAstFn
+                              ? getCriticalityStyles(matchedAstFn.criticality)
+                              : null;
+
+                            return (
+                              <div
+                                key={`${fnItem.name}-${idx}`}
+                                className="flex flex-col justify-between rounded-xl border border-line bg-paper p-5 space-y-3"
+                              >
+                                <div className="space-y-2">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="font-mono text-[13.5px] font-semibold text-ink">
+                                      {fnItem.name}()
+                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                      {fnItem.layer && (
+                                        <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-muted">
+                                          {fnItem.layer}
+                                        </span>
+                                      )}
+                                      {critStyle && (
+                                        <span
+                                          className={`rounded border px-1.5 py-0.5 font-mono text-[9.5px] font-semibold ${critStyle.bg} ${critStyle.border} ${critStyle.text}`}
+                                        >
+                                          {matchedAstFn.criticality}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {fnItem.file && (
+                                    <div className="truncate font-mono text-[11px] text-muted">
+                                      {fnItem.file}
+                                    </div>
+                                  )}
+
+                                  <p className="text-[13.5px] leading-[1.68] text-[#2b2923]">
+                                    {fnItem.whatItDoes}
+                                  </p>
+                                </div>
+
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+                                  <span className="truncate text-[11.5px] text-muted">
+                                    {fnItem.interactsWith
+                                      ? `Connects: ${fnItem.interactsWith}`
+                                      : matchedAstFn
+                                      ? `${matchedAstFn.affectedFilesCount} file(s) impact`
+                                      : ""}
+                                  </span>
+                                  {matchedAstFn && (
+                                    <div className="flex shrink-0 items-center gap-2 font-mono text-[10.5px]">
+                                      <button
+                                        type="button"
+                                        onClick={() => openFunctionInGraph(matchedAstFn.id)}
+                                        className="rounded border border-line bg-surface px-2 py-1 text-ink-soft hover:border-ink hover:text-ink"
+                                      >
+                                        Graph →
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => askAiAboutFunction(matchedAstFn)}
+                                        className="rounded border border-line bg-surface px-2 py-1 text-accent hover:border-accent"
+                                      >
+                                        Ask AI →
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* 6. EXECUTIVE & ANALYST TAKEAWAYS */}
+                    {briefReport.keyTakeaways?.length > 0 && (
+                      <section className="space-y-4 rounded-2xl border border-line-strong bg-surface p-7 md:p-9">
+                        <div>
+                          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                            06 · Key Takeaways &amp; Highlights
+                          </div>
+                          <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                            Summary Points for Slides &amp; Quick Reviews
+                          </h2>
+                        </div>
+
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          {briefReport.keyTakeaways.map((tk, idx) => (
+                            <div
+                              key={`${tk.title}-${idx}`}
+                              className="rounded-xl border border-line bg-paper p-5 space-y-1.5"
+                            >
+                              <span className="inline-block rounded bg-sunken px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+                                {tk.tag}
+                              </span>
+                              <div className="pt-1 text-sm font-semibold text-ink">
+                                {tk.title}
+                              </div>
+                              <p className="text-[13.5px] leading-relaxed text-[#2b2923]">
+                                {tk.detail}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ======================================================= */}
+            {/* MODE II: DETAILED DEVELOPER AUDIT (ON-DEMAND ONLY)      */}
+            {/* ======================================================= */}
+            {reportMode === "detailed" && (
+              <div className="rounded-2xl border border-line-strong bg-surface p-8 md:p-10 space-y-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2 rounded-full border border-line-strong bg-sunken px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                    Report Mode II · On-Demand Detailed Audit
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setReportMode("brief")}
+                    className="font-mono text-xs text-muted underline-offset-4 hover:text-ink hover:underline"
+                  >
+                    ← Back to Brief Overview Report
+                  </button>
+                </div>
+
+                <div>
+                  <h2 className="text-2xl font-semibold tracking-tight text-ink">
+                    Deep Developer Code, Package &amp; Workflow Audit
+                  </h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
+                    Unlike the Brief Overview Report (which generates automatically), the Detailed Developer Report performs an exhaustive engineering audit across all {analysis.fileCount} files, {analysis.functionCount} AST functions, and {analysis.packageCount} packages—and runs <strong className="font-medium text-ink">only when you request it</strong>.
+                  </p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="rounded-xl border border-line bg-paper p-5">
+                    <div className="font-mono text-xs font-semibold text-accent">01</div>
+                    <div className="mt-1.5 text-sm font-semibold text-ink">
+                      Exhaustive Function Audit
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-muted">
+                      Signatures, complexity hotspots, edge cases, caller/callee chains, and refactor blast radius across the full AST graph.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-line bg-paper p-5">
+                    <div className="font-mono text-xs font-semibold text-accent">02</div>
+                    <div className="mt-1.5 text-sm font-semibold text-ink">
+                      Packages &amp; Modern Alternatives
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-muted">
+                      Package versions, security/maintenance notes, and better alternatives or validation of current stack choices.
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-line bg-paper p-5">
+                    <div className="font-mono text-xs font-semibold text-accent">03</div>
+                    <div className="mt-1.5 text-sm font-semibold text-ink">
+                      Deep End-to-End Pipelines
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-muted">
+                      Granular route-to-database traces, error-handling gaps, and concrete developer optimization recommendations.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line bg-paper p-5">
+                  <div className="text-xs text-muted">
+                    Ready for the next milestone: Deep Detailed Report generator will run on-demand via Groq flagship models when clicked.
+                  </div>
+                  <button
+                    type="button"
+                    disabled
+                    className="inline-flex shrink-0 cursor-not-allowed items-center gap-2 rounded-lg border border-line-strong bg-sunken px-4 py-2.5 font-mono text-xs font-medium text-muted"
+                  >
+                    Detailed Report (Next Milestone)
+                  </button>
+                </div>
+              </div>
+            )}
           </main>
         )}
       </div>

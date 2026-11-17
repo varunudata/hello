@@ -96,6 +96,94 @@ function buildBriefReportMarkdown(report, analysis) {
   return lines.filter((l) => l !== undefined).join("\n");
 }
 
+function buildDetailedReportMarkdown(report, analysis) {
+  if (!report) return "";
+  const lines = [
+    `# ${analysis?.fullName || report.repoFullName} — Detailed Developer & Codebase Engineering Report`,
+    `> ${report.headline || ""}`,
+    ``,
+    `## 1. Deep System & Runtime Architecture`,
+    report.executiveEngineeringSummary || "",
+    ``,
+    report.systemArchitectureDeepDive?.overview || "",
+    ``,
+    ...(report.systemArchitectureDeepDive?.subsystemBreakdown || []).flatMap((sub) => [
+      `### ${sub.subsystem} (${(sub.files || []).join(", ")})`,
+      sub.deepExplanation || "",
+      `- **Data Flow & State:** ${sub.dataFlowAndState || ""}`,
+      ``,
+    ]),
+    `## 2. Exhaustive End-to-End Execution Workflows`,
+    ...(report.detailedWorkflows || []).flatMap((wf) => [
+      `### ${wf.workflowName}`,
+      `- **Trigger / Entry:** ${wf.triggerAndEntryFile}`,
+      `- **Overview:** ${wf.overview}`,
+      ...(wf.steps || []).map(
+        (st) =>
+          `${st.stepNumber}. **${st.actionTitle}** (\`${st.file}\` → \`${st.functionName}\`): ${st.detailedExplanation}${
+            st.dataAndPayload ? ` | **Payload/State:** ${st.dataAndPayload}` : ""
+          }${st.errorHandlingAndEdgeCases ? ` | **Edge Cases:** ${st.errorHandlingAndEdgeCases}` : ""}`
+      ),
+      ``,
+    ]),
+    `## 3. Libraries, Dependencies, Versions & Alternatives Audit`,
+    ...(report.packagesAndLibrariesAudit || []).flatMap((pkg) => [
+      `### ${pkg.name} (\`${pkg.version}\` · ${pkg.type})`,
+      `- **Used In Files:** ${(pkg.usedInFiles || []).join(", ") || "Manifest"}`,
+      `- **Purpose:** ${pkg.purposeInRepo}`,
+      `- **How It Works Here:** ${pkg.howItWorksHere}`,
+      `- **Best Alternatives:** ${pkg.bestAlternatives}`,
+      `- **Trade-off / When to Switch:** ${pkg.whyCurrentOrWhenToSwitch}`,
+      ``,
+    ]),
+    `## 4. Complete File-by-File Codebase Walkthrough (${(report.fileWalkthroughs || []).length} Files)`,
+    ...(report.fileWalkthroughs || []).flatMap((f) => [
+      `### \`${f.path}\` (${f.layer} · ${f.lines}L · ${f.functionCount} fns)`,
+      `- **Role:** ${f.architecturalRole}`,
+      `- **Explanation:** ${f.detailedExplanation}`,
+      `- **Connections:** ${f.interactionsWithOtherFiles}`,
+      ``,
+    ]),
+    `## 5. Complete Function-by-Function Engineering Reference (${(report.functionEncyclopedia || []).length} Functions)`,
+    ...(report.functionEncyclopedia || []).flatMap((fn) => [
+      `### \`${fn.signature}\` — \`${fn.file}\` (L${fn.startLine}–L${fn.endLine})`,
+      `- **Criticality:** ${fn.criticality} | **Complexity:** ${fn.complexity} | **Blast Radius:** ${fn.blastRadiusPercent}% (${fn.affectedFilesCount} files)`,
+      `- **Purpose:** ${fn.purposeSummary}`,
+      `- **Step-by-Step Logic:** ${fn.stepByStepLogic}`,
+      `- **Inputs & Outputs:** ${fn.inputsAndOutputs}`,
+      `- **Edge Cases & Impact:** ${fn.edgeCasesAndNotes}`,
+      ``,
+    ]),
+    `## 6. Out-of-the-Box Developer Playbook & Interview Q&A`,
+    `### Environment Variables`,
+    ...(report.outOfTheBoxPlaybook?.environmentVariables || []).map(
+      (env) => `- **\`${env.name}\`** (in ${(env.usedInFiles || []).join(", ")}): ${env.purpose} (\`${env.exampleFormat}\`)`
+    ),
+    ``,
+    `### Security & Production Hardening Audit`,
+    ...(report.outOfTheBoxPlaybook?.securityAndEdgeCasesAudit || []).map(
+      (sec) => `- **[${sec.severity} · ${sec.category}] ${sec.fileAndFunction}**: ${sec.finding} → **Fix:** ${sec.howToFix}`
+    ),
+    ``,
+    `### How to Extend This Codebase`,
+    ...(report.outOfTheBoxPlaybook?.extensionPlaybook || []).flatMap((ext) => [
+      `#### ${ext.scenario}`,
+      `- **Files to Touch:** ${(ext.filesToTouch || []).join(", ")}`,
+      ext.stepByStepGuide,
+      ``,
+    ]),
+    `### Technical Interview & Viva Q&A`,
+    ...(report.outOfTheBoxPlaybook?.interviewAndVivaQa || []).flatMap((qa, idx) => [
+      `#### Q${idx + 1}: ${qa.question}`,
+      `- **Key Files/Functions:** ${qa.keyFilesAndFunctions}`,
+      qa.idealAnswer,
+      ``,
+    ]),
+  ];
+
+  return lines.join("\n");
+}
+
 function renderInlineMarkdown(text) {
   if (!text) return null;
   const cleaned = String(text).replace(/<br\s*\/?>/gi, " · ");
@@ -565,6 +653,15 @@ function ProjectWorkspaceContent() {
   const [briefCached, setBriefCached] = useState(false);
   const [copiedReportMd, setCopiedReportMd] = useState(false);
 
+  const [detailedReport, setDetailedReport] = useState(null);
+  const [detailedLoading, setDetailedLoading] = useState(false);
+  const [detailedError, setDetailedError] = useState("");
+  const [detailedCached, setDetailedCached] = useState(false);
+  const [copiedDetailedMd, setCopiedDetailedMd] = useState(false);
+  const [detailedFnSearch, setDetailedFnSearch] = useState("");
+  const [detailedFnLayer, setDetailedFnLayer] = useState("ALL");
+  const [expandedFnSnippets, setExpandedFnSnippets] = useState({});
+
   const askEndRef = useRef(null);
   const askScrollContainerRef = useRef(null);
   const streamTimerRef = useRef(null);
@@ -597,6 +694,9 @@ function ProjectWorkspaceContent() {
       setBriefReport(null);
       setBriefError("");
       setBriefCached(false);
+      setDetailedReport(null);
+      setDetailedError("");
+      setDetailedCached(false);
       try {
         const res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
           cache: "no-store",
@@ -617,6 +717,12 @@ function ProjectWorkspaceContent() {
         if (existingBrief) {
           setBriefReport(existingBrief);
           setBriefCached(true);
+        }
+        const existingDetailed =
+          data.project?.analysisData?.reports?.detailed || null;
+        if (existingDetailed) {
+          setDetailedReport(existingDetailed);
+          setDetailedCached(true);
         }
         const fns = data.project?.analysisData?.functions || [];
         if (fns.length > 0) {
@@ -1130,6 +1236,64 @@ function ProjectWorkspaceContent() {
     } catch {
       // ignore clipboard restrictions
     }
+  }
+
+  async function fetchDetailedReport(force = false) {
+    if (!projectId || detailedLoading) return;
+    setDetailedLoading(true);
+    setDetailedError("");
+
+    try {
+      const token = localStorage.getItem("archon_token") || "";
+      const res = await fetch(
+        `${API_BASE}/api/projects/${projectId}/reports/detailed`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ force }),
+        }
+      );
+
+      const data = await res.json();
+      if (!res.ok || !data?.report) {
+        setDetailedError(
+          data?.message ||
+            "Unable to generate the detailed developer report right now."
+        );
+        return;
+      }
+
+      setDetailedReport(data.report);
+      setDetailedCached(Boolean(data.cached));
+    } catch {
+      setDetailedError(
+        "Could not reach the AST backend server to generate the detailed report."
+      );
+    } finally {
+      setDetailedLoading(false);
+    }
+  }
+
+  async function handleCopyDetailedMarkdown() {
+    if (!detailedReport) return;
+    const md = buildDetailedReportMarkdown(detailedReport, analysis);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopiedDetailedMd(true);
+      setTimeout(() => setCopiedDetailedMd(false), 2200);
+    } catch {
+      // ignore clipboard restrictions
+    }
+  }
+
+  function toggleFnSnippet(fnId) {
+    setExpandedFnSnippets((prev) => ({
+      ...prev,
+      [fnId]: !prev[fnId],
+    }));
   }
 
   useEffect(() => {
@@ -3698,73 +3862,950 @@ function ProjectWorkspaceContent() {
             {/* MODE II: DETAILED DEVELOPER AUDIT (ON-DEMAND ONLY)      */}
             {/* ======================================================= */}
             {reportMode === "detailed" && (
-              <div className="rounded-2xl border border-line-strong bg-surface p-8 md:p-10 space-y-6">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2 rounded-full border border-line-strong bg-sunken px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
-                    <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    Report Mode II · On-Demand Detailed Audit
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setReportMode("brief")}
-                    className="font-mono text-xs text-muted underline-offset-4 hover:text-ink hover:underline"
-                  >
-                    ← Back to Brief Overview Report
-                  </button>
-                </div>
-
-                <div>
-                  <h2 className="text-2xl font-semibold tracking-tight text-ink">
-                    Deep Developer Code, Package &amp; Workflow Audit
-                  </h2>
-                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-                    Unlike the Brief Overview Report (which generates automatically), the Detailed Developer Report performs an exhaustive engineering audit across all {analysis.fileCount} files, {analysis.functionCount} AST functions, and {analysis.packageCount} packages—and runs <strong className="font-medium text-ink">only when you request it</strong>.
-                  </p>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="rounded-xl border border-line bg-paper p-5">
-                    <div className="font-mono text-xs font-semibold text-accent">01</div>
-                    <div className="mt-1.5 text-sm font-semibold text-ink">
-                      Exhaustive Function Audit
+              <>
+                {/* 1. ON-DEMAND LAUNCH CARD (When Detailed Report Has Not Been Requested Yet) */}
+                {!detailedReport && !detailedLoading && (
+                  <div className="rounded-2xl border border-line-strong bg-surface p-8 md:p-10 space-y-6">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span className="inline-flex items-center gap-2 rounded-full border border-line-strong bg-sunken px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-accent">
+                        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                        Report Mode II · On-Demand Developer Encyclopedia
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setReportMode("brief")}
+                        className="font-mono text-xs text-muted underline-offset-4 hover:text-ink hover:underline"
+                      >
+                        ← Back to Brief Overview Report
+                      </button>
                     </div>
-                    <p className="mt-1 text-xs leading-relaxed text-muted">
-                      Signatures, complexity hotspots, edge cases, caller/callee chains, and refactor blast radius across the full AST graph.
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-line bg-paper p-5">
-                    <div className="font-mono text-xs font-semibold text-accent">02</div>
-                    <div className="mt-1.5 text-sm font-semibold text-ink">
-                      Packages &amp; Modern Alternatives
-                    </div>
-                    <p className="mt-1 text-xs leading-relaxed text-muted">
-                      Package versions, security/maintenance notes, and better alternatives or validation of current stack choices.
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-line bg-paper p-5">
-                    <div className="font-mono text-xs font-semibold text-accent">03</div>
-                    <div className="mt-1.5 text-sm font-semibold text-ink">
-                      Deep End-to-End Pipelines
-                    </div>
-                    <p className="mt-1 text-xs leading-relaxed text-muted">
-                      Granular route-to-database traces, error-handling gaps, and concrete developer optimization recommendations.
-                    </p>
-                  </div>
-                </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line bg-paper p-5">
-                  <div className="text-xs text-muted">
-                    Ready for the next milestone: Deep Detailed Report generator will run on-demand via Groq flagship models when clicked.
+                    <div>
+                      <h2 className="text-2xl font-semibold tracking-tight text-ink">
+                        Complete Developer Code, Workflow &amp; Function Reference
+                      </h2>
+                      <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted">
+                        Designed for engineers joining this repository, developers auditing every architectural boundary, and students who want to understand every file, function, library version, and execution flow in depth without needing to open the raw codebase again. Generated <strong className="font-medium text-ink">only when you ask</strong>.
+                      </p>
+                    </div>
+
+                    {detailedError && (
+                      <div className="rounded-xl border border-[#c8502a]/50 bg-[#fbeae4]/40 p-4 text-sm text-ink">
+                        <strong className="font-mono text-xs uppercase text-accent">
+                          Error:{" "}
+                        </strong>
+                        {detailedError}
+                      </div>
+                    )}
+
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      <div className="rounded-xl border border-line bg-paper p-5">
+                        <div className="font-mono text-xs font-semibold text-accent">
+                          Chapter 01 &amp; 02
+                        </div>
+                        <div className="mt-1.5 text-sm font-semibold text-ink">
+                          Deep Architecture &amp; Execution Workflows
+                        </div>
+                        <p className="mt-1 text-xs leading-relaxed text-muted">
+                          Subsystem breakdown and step-by-step developer execution traces citing exact file paths, function names, payloads, and error handling.
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-line bg-paper p-5">
+                        <div className="font-mono text-xs font-semibold text-accent">
+                          Chapter 03 &amp; 04
+                        </div>
+                        <div className="mt-1.5 text-sm font-semibold text-ink">
+                          All {analysis.packageCount} Packages &amp; All {analysis.fileCount} Files
+                        </div>
+                        <p className="mt-1 text-xs leading-relaxed text-muted">
+                          Every dependency with its exact version, files importing it, and best modern alternatives, plus a file-by-file walkthrough of all {analysis.fileCount} files.
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-line bg-paper p-5 sm:col-span-2 lg:col-span-1">
+                        <div className="font-mono text-xs font-semibold text-accent">
+                          Chapter 05 &amp; 06
+                        </div>
+                        <div className="mt-1.5 text-sm font-semibold text-ink">
+                          All {analysis.functionCount} Functions + Developer Playbook
+                        </div>
+                        <p className="mt-1 text-xs leading-relaxed text-muted">
+                          Every function explained with embedded AST source code, plus env vars, security hardening, how to extend the repo, and interview/viva Q&amp;A.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line-strong bg-paper p-5">
+                      <div>
+                        <div className="text-sm font-semibold text-ink">
+                          Ready to generate your complete developer handbook
+                        </div>
+                        <div className="mt-0.5 font-mono text-xs text-muted">
+                          Runs a 2-pass Groq (`openai/gpt-oss-120b`) synthesis + 100% AST inventory merge across {analysis.fileCount} files &amp; {analysis.functionCount} functions
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => fetchDetailedReport(true)}
+                        className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-ink px-5 py-3 font-mono text-xs font-medium text-paper transition-colors hover:bg-ink-soft"
+                      >
+                        Generate Detailed Developer Report →
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    disabled
-                    className="inline-flex shrink-0 cursor-not-allowed items-center gap-2 rounded-lg border border-line-strong bg-sunken px-4 py-2.5 font-mono text-xs font-medium text-muted"
-                  >
-                    Detailed Report (Next Milestone)
-                  </button>
-                </div>
-              </div>
+                )}
+
+                {/* 2. LOADING STATE WHILE 2-PASS SYNTHESIS RUNS */}
+                {detailedLoading && !detailedReport && (
+                  <div className="space-y-6 rounded-2xl border border-line-strong bg-surface p-8 md:p-10">
+                    <div className="flex items-center gap-3">
+                      <span className="h-2.5 w-2.5 animate-ping rounded-full bg-accent" />
+                      <div className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                        Building Exhaustive Detailed Developer Report (`openai/gpt-oss-120b`)…
+                      </div>
+                    </div>
+                    <p className="max-w-2xl text-sm leading-relaxed text-muted">
+                      Running 2-pass deep synthesis and merging with the complete AST inventory: documenting all{" "}
+                      <strong className="text-ink">{analysis.fileCount} source files</strong>, all{" "}
+                      <strong className="text-ink">{analysis.functionCount} functions</strong> (with source code), all{" "}
+                      <strong className="text-ink">{analysis.packageCount} packages &amp; versions</strong>, end-to-end execution workflows, and out-of-the-box engineering insights.
+                    </p>
+                    <div className="grid gap-4 pt-2 sm:grid-cols-3">
+                      <div className="rounded-xl border border-line bg-paper p-4">
+                        <div className="font-mono text-[10px] uppercase text-accent">
+                          Pass 01 · Active
+                        </div>
+                        <div className="mt-1 text-xs font-semibold text-ink">
+                          Architecture, Workflows &amp; Packages Audit
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-line bg-paper p-4">
+                        <div className="font-mono text-[10px] uppercase text-accent">
+                          Pass 02 · Active
+                        </div>
+                        <div className="mt-1 text-xs font-semibold text-ink">
+                          All Files, Functions &amp; Developer Playbook
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-line bg-paper p-4">
+                        <div className="font-mono text-[10px] uppercase text-sage">
+                          AST Merge · 100%
+                        </div>
+                        <div className="mt-1 text-xs font-semibold text-ink">
+                          Full Source Snippets &amp; Call Graph Links
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. COMPLETE 6-CHAPTER DETAILED DEVELOPER REPORT */}
+                {detailedReport && (
+                  <div className="space-y-9 pb-12">
+                    {/* Top Action & Chapter Jump Bar */}
+                    <div className="space-y-4 rounded-2xl border border-line-strong bg-surface p-5 shadow-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-muted">
+                          <span className="rounded-md bg-ink px-2.5 py-1 font-semibold text-paper">
+                            DETAILED DEVELOPER HANDBOOK
+                          </span>
+                          <span className="rounded-md border border-line-strong bg-paper px-2.5 py-1 text-ink">
+                            Model: {detailedReport.meta?.model || "openai/gpt-oss-120b"}
+                          </span>
+                          <span className="rounded-md border border-line bg-paper px-2.5 py-1">
+                            {detailedReport.fileWalkthroughs?.length || analysis.fileCount} files ·{" "}
+                            {detailedReport.functionEncyclopedia?.length || analysis.functionCount} functions ·{" "}
+                            {detailedReport.packagesAndLibrariesAudit?.length || analysis.packageCount} packages
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCopyDetailedMarkdown}
+                            className="rounded-lg border border-line-strong bg-paper px-3.5 py-2 font-mono text-xs text-ink transition-colors hover:border-ink"
+                          >
+                            {copiedDetailedMd ? "Copied Full Handbook ✓" : "Copy Full Markdown"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={detailedLoading}
+                            onClick={() => fetchDetailedReport(true)}
+                            className="rounded-lg border border-line-strong bg-paper px-3.5 py-2 font-mono text-xs text-ink transition-colors hover:border-ink disabled:opacity-50"
+                          >
+                            {detailedLoading ? "Regenerating…" : "↻ Regenerate Detailed"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Quick Chapter Anchor Bar */}
+                      <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3 font-mono text-[11px]">
+                        <span className="text-muted">Chapters:</span>
+                        {[
+                          { id: "chap-arch", label: "01 · Architecture" },
+                          { id: "chap-workflows", label: "02 · Execution Workflows" },
+                          {
+                            id: "chap-packages",
+                            label: `03 · Libraries & Versions (${
+                              detailedReport.packagesAndLibrariesAudit?.length || 0
+                            })`,
+                          },
+                          {
+                            id: "chap-files",
+                            label: `04 · All Files (${
+                              detailedReport.fileWalkthroughs?.length || 0
+                            })`,
+                          },
+                          {
+                            id: "chap-functions",
+                            label: `05 · All Functions (${
+                              detailedReport.functionEncyclopedia?.length || 0
+                            })`,
+                          },
+                          {
+                            id: "chap-playbook",
+                            label: "06 · Out-of-the-Box & Interview Playbook",
+                          },
+                        ].map((ch) => (
+                          <a
+                            key={ch.id}
+                            href={`#${ch.id}`}
+                            className="rounded-md border border-line bg-paper px-2.5 py-1 text-ink-soft transition-colors hover:border-ink hover:text-accent"
+                          >
+                            {ch.label}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* =================================================== */}
+                    {/* CHAPTER 01: DEEP SYSTEM & SUBSYSTEM ARCHITECTURE    */}
+                    {/* =================================================== */}
+                    <section
+                      id="chap-arch"
+                      className="space-y-6 rounded-2xl border border-line-strong bg-surface p-7 md:p-9"
+                    >
+                      <div className="space-y-3">
+                        <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                          Chapter 01 · Deep Architectural &amp; Runtime Blueprint
+                        </div>
+                        <h2 className="text-xl font-semibold tracking-tight text-ink sm:text-2xl">
+                          {detailedReport.headline}
+                        </h2>
+                        <div className="space-y-3.5 text-[14.5px] leading-[1.78] text-[#2b2923]">
+                          {String(detailedReport.executiveEngineeringSummary || "")
+                            .split(/\n{2,}/)
+                            .filter(Boolean)
+                            .map((para, idx) => (
+                              <p key={idx}>{renderInlineMarkdown(para)}</p>
+                            ))}
+                          {detailedReport.systemArchitectureDeepDive?.overview && (
+                            <p className="rounded-xl border border-line bg-paper p-4 text-[14px] leading-[1.72] text-ink-soft">
+                              {renderInlineMarkdown(
+                                detailedReport.systemArchitectureDeepDive.overview
+                              )}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {detailedReport.systemArchitectureDeepDive?.subsystemBreakdown
+                        ?.length > 0 && (
+                        <div className="space-y-4 pt-2">
+                          <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted">
+                            Subsystem-by-Subsystem Engineering Breakdown
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            {detailedReport.systemArchitectureDeepDive.subsystemBreakdown.map(
+                              (sub, idx) => (
+                                <div
+                                  key={`${sub.subsystem}-${idx}`}
+                                  className="flex flex-col justify-between rounded-xl border border-line bg-paper p-5 space-y-3"
+                                >
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <h3 className="text-[15px] font-semibold text-ink">
+                                        {sub.subsystem}
+                                      </h3>
+                                      <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-accent">
+                                        0{idx + 1}
+                                      </span>
+                                    </div>
+                                    {sub.files?.length > 0 && (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {sub.files.map((fp) => (
+                                          <span
+                                            key={fp}
+                                            className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10.5px] text-ink"
+                                          >
+                                            {fp}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
+                                      {renderInlineMarkdown(sub.deepExplanation)}
+                                    </p>
+                                  </div>
+
+                                  {sub.dataFlowAndState && (
+                                    <div className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
+                                      <strong className="font-mono text-[10px] uppercase tracking-wider text-accent">
+                                        State &amp; Data Flow:{" "}
+                                      </strong>
+                                      {renderInlineMarkdown(sub.dataFlowAndState)}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {/* =================================================== */}
+                    {/* CHAPTER 02: EXHAUSTIVE EXECUTION WORKFLOWS          */}
+                    {/* =================================================== */}
+                    {detailedReport.detailedWorkflows?.length > 0 && (
+                      <section
+                        id="chap-workflows"
+                        className="space-y-7 rounded-2xl border border-line-strong bg-surface p-7 md:p-9"
+                      >
+                        <div>
+                          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                            Chapter 02 · Exhaustive End-to-End Execution Workflows
+                          </div>
+                          <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                            File-by-File &amp; Function-by-Function Runtime Traces ({detailedReport.detailedWorkflows.length} Workflows)
+                          </h2>
+                          <p className="mt-1 text-xs text-muted">
+                            Every step names the exact file path, function invoked, request/state payload, and error-handling behavior.
+                          </p>
+                        </div>
+
+                        <div className="space-y-8">
+                          {detailedReport.detailedWorkflows.map((wf, wIdx) => (
+                            <div
+                              key={`${wf.workflowName}-${wIdx}`}
+                              className="rounded-2xl border border-line-strong bg-paper p-6 space-y-5"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
+                                <div>
+                                  <div className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+                                    Workflow 0{wIdx + 1}
+                                  </div>
+                                  <h3 className="mt-0.5 text-lg font-semibold text-ink">
+                                    {wf.workflowName}
+                                  </h3>
+                                  {wf.overview && (
+                                    <p className="mt-1 text-[13.5px] leading-relaxed text-ink-soft">
+                                      {renderInlineMarkdown(wf.overview)}
+                                    </p>
+                                  )}
+                                </div>
+                                {wf.triggerAndEntryFile && (
+                                  <span className="rounded-lg border border-line-strong bg-surface px-3 py-1.5 font-mono text-[11px] text-ink">
+                                    Entry: {wf.triggerAndEntryFile}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="relative space-y-4 pl-6 before:absolute before:bottom-4 before:left-[14px] before:top-4 before:w-[1.5px] before:bg-line-strong">
+                                {wf.steps.map((st, sIdx) => (
+                                  <div
+                                    key={`${st.actionTitle}-${sIdx}`}
+                                    className="relative rounded-xl border border-line bg-surface p-5 space-y-2.5"
+                                  >
+                                    <span className="absolute -left-[25px] top-5 flex h-7 w-7 items-center justify-center rounded-full border border-line-strong bg-paper font-mono text-[11px] font-semibold text-accent">
+                                      {st.stepNumber || sIdx + 1}
+                                    </span>
+
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <h4 className="text-[14.5px] font-semibold text-ink">
+                                        {st.actionTitle}
+                                      </h4>
+                                      <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+                                        {st.file && (
+                                          <span className="rounded bg-sunken px-2 py-0.5 text-ink">
+                                            {st.file}
+                                          </span>
+                                        )}
+                                        {st.functionName && (
+                                          <span className="rounded border border-[#c8502a]/35 bg-[#fbeae4]/45 px-2 py-0.5 font-medium text-accent">
+                                            {st.functionName}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
+                                      {renderInlineMarkdown(st.detailedExplanation)}
+                                    </p>
+
+                                    {(st.dataAndPayload || st.errorHandlingAndEdgeCases) && (
+                                      <div className="grid gap-2.5 pt-1 sm:grid-cols-2">
+                                        {st.dataAndPayload && (
+                                          <div className="rounded-lg border border-line bg-paper px-3 py-2 text-xs leading-relaxed text-ink-soft">
+                                            <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink">
+                                              Payload &amp; Data:{" "}
+                                            </span>
+                                            {renderInlineMarkdown(st.dataAndPayload)}
+                                          </div>
+                                        )}
+                                        {st.errorHandlingAndEdgeCases && (
+                                          <div className="rounded-lg border border-line bg-paper px-3 py-2 text-xs leading-relaxed text-ink-soft">
+                                            <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+                                              Error / Edge Cases:{" "}
+                                            </span>
+                                            {renderInlineMarkdown(
+                                              st.errorHandlingAndEdgeCases
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* =================================================== */}
+                    {/* CHAPTER 03: LIBRARIES, VERSIONS & ALTERNATIVES      */}
+                    {/* =================================================== */}
+                    {detailedReport.packagesAndLibrariesAudit?.length > 0 && (
+                      <section
+                        id="chap-packages"
+                        className="space-y-6 rounded-2xl border border-line-strong bg-surface p-7 md:p-9"
+                      >
+                        <div>
+                          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                            Chapter 03 · Complete Libraries, Versions &amp; Alternatives Audit
+                          </div>
+                          <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                            All {detailedReport.packagesAndLibrariesAudit.length} Dependencies, Exact Versions &amp; Engineering Trade-Offs
+                          </h2>
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                          {detailedReport.packagesAndLibrariesAudit.map((pkg) => (
+                            <div
+                              key={pkg.name}
+                              className="flex flex-col justify-between rounded-xl border border-line bg-paper p-5 space-y-3"
+                            >
+                              <div className="space-y-2.5">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-[14px] font-semibold text-ink">
+                                      {pkg.name}
+                                    </span>
+                                    <span className="rounded bg-ink px-2 py-0.5 font-mono text-[10.5px] text-paper">
+                                      {pkg.version}
+                                    </span>
+                                  </div>
+                                  <span className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10px] uppercase text-muted">
+                                    {pkg.type} · {pkg.usedInFilesCount || 0} file(s)
+                                  </span>
+                                </div>
+
+                                {pkg.usedInFiles?.length > 0 && (
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    <span className="font-mono text-[10px] text-muted">
+                                      Imported in:
+                                    </span>
+                                    {pkg.usedInFiles.map((uf) => (
+                                      <span
+                                        key={uf}
+                                        className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
+                                      >
+                                        {uf}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+
+                                <p className="text-[13.5px] leading-[1.68] text-[#2b2923]">
+                                  <strong className="font-medium text-ink">Role: </strong>
+                                  {renderInlineMarkdown(pkg.purposeInRepo)}
+                                </p>
+
+                                <p className="text-xs leading-relaxed text-ink-soft">
+                                  <strong className="font-medium text-ink">
+                                    How it is used here:{" "}
+                                  </strong>
+                                  {renderInlineMarkdown(pkg.howItWorksHere)}
+                                </p>
+                              </div>
+
+                              <div className="space-y-1.5 rounded-lg border border-line bg-surface p-3 text-xs">
+                                <div>
+                                  <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+                                    Best Alternatives:{" "}
+                                  </span>
+                                  <span className="font-medium text-ink">
+                                    {pkg.bestAlternatives}
+                                  </span>
+                                </div>
+                                <div className="leading-relaxed text-muted">
+                                  {renderInlineMarkdown(pkg.whyCurrentOrWhenToSwitch)}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* =================================================== */}
+                    {/* CHAPTER 04: COMPLETE FILE-BY-FILE WALKTHROUGH       */}
+                    {/* =================================================== */}
+                    {detailedReport.fileWalkthroughs?.length > 0 && (
+                      <section
+                        id="chap-files"
+                        className="space-y-6 rounded-2xl border border-line-strong bg-surface p-7 md:p-9"
+                      >
+                        <div>
+                          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                            Chapter 04 · Complete File-by-File Codebase Walkthrough
+                          </div>
+                          <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                            Every Source File Explained ({detailedReport.fileWalkthroughs.length} Files)
+                          </h2>
+                        </div>
+
+                        <div className="space-y-4">
+                          {detailedReport.fileWalkthroughs.map((f) => (
+                            <div
+                              key={f.path}
+                              className="rounded-xl border border-line bg-paper p-5 space-y-3"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2.5">
+                                <div className="flex flex-wrap items-center gap-2.5">
+                                  <span className="font-mono text-sm font-semibold text-ink">
+                                    {f.path}
+                                  </span>
+                                  <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-accent">
+                                    {f.layer}
+                                  </span>
+                                </div>
+                                <span className="font-mono text-xs text-muted">
+                                  {f.language} · {f.lines} lines · {f.functionCount} fn(s)
+                                </span>
+                              </div>
+
+                              <div className="text-xs font-medium text-ink">
+                                {f.architecturalRole}
+                              </div>
+
+                              <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
+                                {renderInlineMarkdown(f.detailedExplanation)}
+                              </p>
+
+                              <div className="flex flex-wrap gap-4 border-t border-line pt-2.5 text-xs text-muted">
+                                <div>
+                                  <strong className="font-mono text-[10px] uppercase text-ink">
+                                    Cross-File Connections:{" "}
+                                  </strong>
+                                  <span>
+                                    {renderInlineMarkdown(f.interactionsWithOtherFiles)}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {(f.definedFunctions?.length > 0 ||
+                                f.externalImports?.length > 0) && (
+                                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                  {f.definedFunctions?.map((dfn) => (
+                                    <span
+                                      key={dfn}
+                                      className="rounded border border-line-strong bg-surface px-2 py-0.5 font-mono text-[10.5px] text-ink"
+                                    >
+                                      fn: {dfn}
+                                    </span>
+                                  ))}
+                                  {f.externalImports?.map((imp) => (
+                                    <span
+                                      key={imp}
+                                      className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-muted"
+                                    >
+                                      pkg: {imp}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* =================================================== */}
+                    {/* CHAPTER 05: COMPLETE FUNCTION-BY-FUNCTION REFERENCE */}
+                    {/* =================================================== */}
+                    {detailedReport.functionEncyclopedia?.length > 0 && (
+                      <section
+                        id="chap-functions"
+                        className="space-y-6 rounded-2xl border border-line-strong bg-surface p-7 md:p-9"
+                      >
+                        <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
+                          <div>
+                            <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                              Chapter 05 · Complete Function-by-Function Encyclopedia
+                            </div>
+                            <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                              All {detailedReport.functionEncyclopedia.length} AST Functions — Logic, Call Graph &amp; Source Code
+                            </h2>
+                            <p className="mt-1 text-xs text-muted">
+                              Includes step-by-step logic, inputs/outputs, blast radius, and actual source code for every function.
+                            </p>
+                          </div>
+
+                          {/* Search & Filter Controls */}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input
+                              type="text"
+                              value={detailedFnSearch}
+                              onChange={(e) => setDetailedFnSearch(e.target.value)}
+                              placeholder="Search function or file…"
+                              className="h-9 w-52 rounded-lg border border-line-strong bg-paper px-3 font-mono text-xs text-ink placeholder:text-faint focus:border-ink focus:outline-none"
+                            />
+                            <select
+                              value={detailedFnLayer}
+                              onChange={(e) => setDetailedFnLayer(e.target.value)}
+                              className="h-9 rounded-lg border border-line-strong bg-paper px-2.5 font-mono text-xs text-ink focus:border-ink focus:outline-none"
+                            >
+                              <option value="ALL">All Layers ({detailedReport.functionEncyclopedia.length})</option>
+                              <option value="Frontend & UI">Frontend &amp; UI</option>
+                              <option value="API & Controllers">API &amp; Controllers</option>
+                              <option value="Core Logic & Services">Core Logic &amp; Services</option>
+                              <option value="Database & Models">Database &amp; Models</option>
+                              <option value="Entry & Config">Entry &amp; Config</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-5">
+                          {detailedReport.functionEncyclopedia
+                            .filter((fn) => {
+                              const matchesLayer =
+                                detailedFnLayer === "ALL" || fn.layer === detailedFnLayer;
+                              const q = detailedFnSearch.trim().toLowerCase();
+                              const matchesSearch =
+                                !q ||
+                                fn.name.toLowerCase().includes(q) ||
+                                fn.file.toLowerCase().includes(q) ||
+                                (fn.purposeSummary || "").toLowerCase().includes(q);
+                              return matchesLayer && matchesSearch;
+                            })
+                            .map((fn, idx) => {
+                              const crit = getCriticalityStyles(fn.criticality);
+                              const isCodeOpen = Boolean(expandedFnSnippets[fn.id]);
+                              return (
+                                <div
+                                  key={fn.id}
+                                  className="rounded-xl border border-line-strong bg-paper p-5 space-y-3.5"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-3">
+                                    <div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="font-mono text-xs text-muted">
+                                          #{idx + 1}
+                                        </span>
+                                        <span className="font-mono text-[14.5px] font-semibold text-ink">
+                                          {fn.signature}
+                                        </span>
+                                        <span
+                                          className={`rounded border px-2 py-0.5 font-mono text-[10px] font-semibold ${crit.bg} ${crit.border} ${crit.text}`}
+                                        >
+                                          {fn.criticality}
+                                        </span>
+                                        <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-muted">
+                                          {fn.layer}
+                                        </span>
+                                      </div>
+                                      <div className="mt-1 font-mono text-xs text-muted">
+                                        File:{" "}
+                                        <strong className="text-ink">{fn.file}</strong>{" "}
+                                        (Lines {fn.startLine}–{fn.endLine} · {fn.lineCount}L · Complexity {fn.complexity} · Blast Radius {fn.blastRadiusPercent}%)
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleFnSnippet(fn.id)}
+                                        className="rounded-md border border-line-strong bg-surface px-2.5 py-1 text-ink hover:border-ink"
+                                      >
+                                        {isCodeOpen ? "Hide Code ▴" : "View Source Code ▾"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openFunctionInGraph(fn.id)}
+                                        className="rounded-md border border-line bg-surface px-2.5 py-1 text-ink-soft hover:border-ink hover:text-ink"
+                                      >
+                                        Graph →
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => askAiAboutFunction(fn)}
+                                        className="rounded-md border border-line bg-surface px-2.5 py-1 text-accent hover:border-accent"
+                                      >
+                                        Ask AI →
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-2 text-[13.5px] leading-[1.7] text-[#2b2923]">
+                                    <p>
+                                      <strong className="font-semibold text-ink">
+                                        Purpose:{" "}
+                                      </strong>
+                                      {renderInlineMarkdown(fn.purposeSummary)}
+                                    </p>
+                                    <p>
+                                      <strong className="font-semibold text-ink">
+                                        Internal Step-by-Step Logic:{" "}
+                                      </strong>
+                                      {renderInlineMarkdown(fn.stepByStepLogic)}
+                                    </p>
+                                  </div>
+
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
+                                      <strong className="font-mono text-[10px] uppercase tracking-wider text-ink">
+                                        Inputs, Outputs &amp; Side Effects:{" "}
+                                      </strong>
+                                      {renderInlineMarkdown(fn.inputsAndOutputs)}
+                                    </div>
+                                    <div className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
+                                      <strong className="font-mono text-[10px] uppercase tracking-wider text-accent">
+                                        Edge Cases &amp; Blast Radius:{" "}
+                                      </strong>
+                                      {renderInlineMarkdown(fn.edgeCasesAndNotes)}
+                                    </div>
+                                  </div>
+
+                                  {/* Callers, Callees & Affected Files Strip */}
+                                  <div className="flex flex-wrap gap-x-6 gap-y-1.5 border-t border-line pt-2.5 font-mono text-[11px] text-muted">
+                                    <span>
+                                      <strong className="text-ink">Calls:</strong>{" "}
+                                      {fn.callsFunctions?.length
+                                        ? fn.callsFunctions.join(", ")
+                                        : "None (leaf function)"}
+                                    </span>
+                                    <span>
+                                      <strong className="text-ink">Called By:</strong>{" "}
+                                      {fn.calledByFunctions?.length
+                                        ? fn.calledByFunctions.join(", ")
+                                        : "Entry / Route / UI handler"}
+                                    </span>
+                                    <span>
+                                      <strong className="text-ink">
+                                        Files Affected if Modified ({fn.affectedFilesCount}):
+                                      </strong>{" "}
+                                      {(fn.affectedFilesIfChanged || []).join(", ")}
+                                    </span>
+                                  </div>
+
+                                  {/* Collapsible Embedded Source Code */}
+                                  {isCodeOpen && fn.codeSnippet && (
+                                    <div className="overflow-hidden rounded-xl border border-line-strong bg-[#f4f2ed]">
+                                      <div className="flex items-center justify-between border-b border-line bg-[#ebe8e1] px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted">
+                                        <span>
+                                          {fn.file} (Lines {fn.startLine}–{fn.endLine})
+                                        </span>
+                                        <span>AST Extracted Source</span>
+                                      </div>
+                                      <pre className="overflow-x-auto p-3.5 font-mono text-xs leading-relaxed text-ink">
+                                        <code>{fn.codeSnippet}</code>
+                                      </pre>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </section>
+                    )}
+
+                    {/* =================================================== */}
+                    {/* CHAPTER 06: OUT-OF-THE-BOX DEVELOPER PLAYBOOK       */}
+                    {/* =================================================== */}
+                    <section
+                      id="chap-playbook"
+                      className="space-y-8 rounded-2xl border border-line-strong bg-surface p-7 md:p-9"
+                    >
+                      <div>
+                        <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                          Chapter 06 · Out-of-the-Box Developer Knowledge &amp; Onboarding Playbook
+                        </div>
+                        <h2 className="mt-1 text-xl font-semibold tracking-tight text-ink">
+                          Environment Setup, Security Hardening, Extension Recipes &amp; Interview Q&amp;A
+                        </h2>
+                        <p className="mt-1 text-xs text-muted">
+                          Essential engineering knowledge beyond the literal source code for new team members and students preparing for project reviews.
+                        </p>
+                      </div>
+
+                      {/* 6A. Environment Variables Checklist */}
+                      {detailedReport.outOfTheBoxPlaybook?.environmentVariables
+                        ?.length > 0 && (
+                        <div className="space-y-3">
+                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                            01 · Required Environment Variables &amp; Configuration
+                          </h3>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {detailedReport.outOfTheBoxPlaybook.environmentVariables.map(
+                              (env) => (
+                                <div
+                                  key={env.name}
+                                  className="rounded-xl border border-line bg-paper p-4 space-y-1.5"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <code className="rounded bg-sunken px-2 py-0.5 font-mono text-xs font-semibold text-accent">
+                                      {env.name}
+                                    </code>
+                                    <span className="truncate font-mono text-[10.5px] text-muted">
+                                      {(env.usedInFiles || []).join(", ")}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs leading-relaxed text-[#2b2923]">
+                                    {env.purpose}
+                                  </p>
+                                  {env.exampleFormat && (
+                                    <div className="font-mono text-[11px] text-muted">
+                                      Example: <code>{env.exampleFormat}</code>
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 6B. Security, Edge Cases & Production Hardening Audit */}
+                      {detailedReport.outOfTheBoxPlaybook?.securityAndEdgeCasesAudit
+                        ?.length > 0 && (
+                        <div className="space-y-3">
+                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                            02 · Security, Edge-Case &amp; Production Hardening Audit
+                          </h3>
+                          <div className="grid gap-4 md:grid-cols-2">
+                            {detailedReport.outOfTheBoxPlaybook.securityAndEdgeCasesAudit.map(
+                              (sec, idx) => (
+                                <div
+                                  key={`${sec.fileAndFunction}-${idx}`}
+                                  className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="rounded bg-[#fbeae4] px-2 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                                      {sec.severity} · {sec.category}
+                                    </span>
+                                    {sec.fileAndFunction && (
+                                      <span className="font-mono text-[11px] text-ink">
+                                        {sec.fileAndFunction}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[13.5px] leading-relaxed text-[#2b2923]">
+                                    <strong className="text-ink">Finding: </strong>
+                                    {renderInlineMarkdown(sec.finding)}
+                                  </p>
+                                  <p className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
+                                    <strong className="font-mono text-[10px] uppercase text-sage">
+                                      Recommended Fix:{" "}
+                                    </strong>
+                                    {renderInlineMarkdown(sec.howToFix)}
+                                  </p>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 6C. How to Extend This Codebase */}
+                      {detailedReport.outOfTheBoxPlaybook?.extensionPlaybook
+                        ?.length > 0 && (
+                        <div className="space-y-3">
+                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                            03 · Developer Extension Guide (How to Add New Features)
+                          </h3>
+                          <div className="space-y-4">
+                            {detailedReport.outOfTheBoxPlaybook.extensionPlaybook.map(
+                              (ext, idx) => (
+                                <div
+                                  key={`${ext.scenario}-${idx}`}
+                                  className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <h4 className="text-sm font-semibold text-ink">
+                                      {ext.scenario}
+                                    </h4>
+                                    {ext.filesToTouch?.length > 0 && (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {ext.filesToTouch.map((ft) => (
+                                          <span
+                                            key={ft}
+                                            className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-ink"
+                                          >
+                                            {ft}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
+                                    {renderInlineMarkdown(ext.stepByStepGuide)}
+                                  </p>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 6D. Technical Interview & Viva Q&A */}
+                      {detailedReport.outOfTheBoxPlaybook?.interviewAndVivaQa
+                        ?.length > 0 && (
+                        <div className="space-y-3">
+                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                            04 · Technical Interview, Code Review &amp; Viva Q&amp;A
+                          </h3>
+                          <div className="space-y-4">
+                            {detailedReport.outOfTheBoxPlaybook.interviewAndVivaQa.map(
+                              (qa, idx) => (
+                                <div
+                                  key={`${qa.question}-${idx}`}
+                                  className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <h4 className="text-[14.5px] font-semibold text-ink">
+                                      Q{idx + 1}. {qa.question}
+                                    </h4>
+                                    {qa.keyFilesAndFunctions && (
+                                      <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-accent">
+                                        {qa.keyFilesAndFunctions}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[13.5px] leading-[1.72] text-[#2b2923]">
+                                    {renderInlineMarkdown(qa.idealAnswer)}
+                                  </p>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+              </>
             )}
           </main>
         )}

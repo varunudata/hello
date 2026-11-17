@@ -18,10 +18,14 @@ const {
   getExtension,
 } = require("../lib/astEngine");
 const { answerCodebaseQuestion } = require("../lib/codebaseRag");
-const { generateBriefProjectReport } = require("../lib/projectReports");
+const {
+  generateBriefProjectReport,
+  generateDetailedProjectReport,
+} = require("../lib/projectReports");
 
 const router = express.Router();
 const inFlightBriefReports = new Map();
+const inFlightDetailedReports = new Map();
 const JWT_SECRET =
   process.env.JWT_SECRET || "archon_ast_engine_secret_key_change_in_production";
 
@@ -1092,24 +1096,28 @@ async function loadAuthorizedProjectWithAnalysis(projectId, userId) {
 }
 
 /**
- * Persists a generated Brief Overview Report into `analysisData.reports.brief`
- * across both the local JSON mirror and Neon PostgreSQL.
+ * Persists a generated report (`brief` or `detailed`) into `analysisData.reports`
+ * across both the local JSON mirror and Neon PostgreSQL, preserving any sibling report.
  */
-async function persistBriefReport(project, briefReport) {
-  if (!project || !briefReport || briefReport?.meta?.model === "AST Fallback") {
+async function persistProjectReport(project, reportKey, reportPayload) {
+  if (!project || !reportPayload || reportPayload?.meta?.model === "AST Fallback") {
     return;
   }
 
+  // Read latest mirror entry so saving brief & detailed never overwrite each other
+  const latestMirror = readFallbackProjects().find((p) => p.id === project.id);
+  const currentAnalysisData = latestMirror?.analysisData || project.analysisData || {};
+
   const nextAnalysisData = {
-    ...(project.analysisData || {}),
+    ...currentAnalysisData,
     reports: {
-      ...(project.analysisData?.reports || {}),
-      brief: briefReport,
+      ...(currentAnalysisData.reports || {}),
+      [reportKey]: reportPayload,
     },
   };
 
   const updatedProject = {
-    ...project,
+    ...(latestMirror || project),
     analysisData: nextAnalysisData,
     updatedAt: new Date().toISOString(),
   };
@@ -1146,7 +1154,7 @@ function ensureBriefReport(project, analysis, force = false) {
   const task = (async () => {
     try {
       const report = await generateBriefProjectReport(analysis);
-      await persistBriefReport(project, report);
+      await persistProjectReport(project, "brief", report);
       return { report, cached: false };
     } finally {
       inFlightBriefReports.delete(project.id);
@@ -1154,6 +1162,34 @@ function ensureBriefReport(project, analysis, force = false) {
   })();
 
   inFlightBriefReports.set(project.id, task);
+  return task;
+}
+
+/**
+ * Deduplicated generator for the On-Demand Detailed Developer Report.
+ * Runs ONLY when explicitly requested by the user.
+ */
+function ensureDetailedReport(project, analysis, force = false) {
+  const existing = project?.analysisData?.reports?.detailed;
+  if (!force && existing && existing?.meta?.model !== "AST Fallback") {
+    return Promise.resolve({ report: existing, cached: true });
+  }
+
+  if (!force && inFlightDetailedReports.has(project.id)) {
+    return inFlightDetailedReports.get(project.id);
+  }
+
+  const task = (async () => {
+    try {
+      const report = await generateDetailedProjectReport(analysis);
+      await persistProjectReport(project, "detailed", report);
+      return { report, cached: false };
+    } finally {
+      inFlightDetailedReports.delete(project.id);
+    }
+  })();
+
+  inFlightDetailedReports.set(project.id, task);
   return task;
 }
 
@@ -1198,6 +1234,42 @@ router.post("/:id/reports/brief", requireAuth, async (req, res) => {
     return res.status(500).json({
       error: "BRIEF_REPORT_FAILED",
       message: "Failed to generate the brief overview report. Please try again.",
+    });
+  }
+});
+
+// POST /api/projects/:id/reports/detailed — On-demand Detailed Developer Report
+router.post("/:id/reports/detailed", requireAuth, async (req, res) => {
+  try {
+    const force = Boolean(req.body?.force);
+    const loaded = await loadAuthorizedProjectWithAnalysis(
+      req.params.id,
+      req.user.id
+    );
+
+    if (!loaded) {
+      return res.status(404).json({
+        error: "PROJECT_NOT_FOUND",
+        message: "Project not found in your workspace.",
+      });
+    }
+
+    const { report, cached } = await ensureDetailedReport(
+      loaded.project,
+      loaded.analysis,
+      force
+    );
+
+    return res.status(200).json({
+      status: "OK",
+      cached,
+      report,
+    });
+  } catch (err) {
+    console.error("[POST /api/projects/:id/reports/detailed ERROR]:", err);
+    return res.status(500).json({
+      error: "DETAILED_REPORT_FAILED",
+      message: "Failed to generate the detailed developer report. Please try again.",
     });
   }
 });

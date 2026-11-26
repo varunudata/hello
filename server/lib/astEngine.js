@@ -57,6 +57,63 @@ function getFolder(filePath) {
 }
 
 /**
+ * Generates a collision-free function ID within a file so multiple classes
+ * sharing method names (e.g. `predict`, `fit`, `__init__`) or nested functions
+ * never produce duplicate IDs or React keys.
+ */
+function makeUniqueFunctionId(usedIds, filePath, name, startLine) {
+  const baseId = `${filePath}::${name}`;
+  if (!usedIds.has(baseId)) {
+    usedIds.add(baseId);
+    return baseId;
+  }
+  const lineScopedId = `${baseId}@L${startLine}`;
+  if (!usedIds.has(lineScopedId)) {
+    usedIds.add(lineScopedId);
+    return lineScopedId;
+  }
+  let suffix = 2;
+  while (usedIds.has(`${lineScopedId}#${suffix}`)) {
+    suffix++;
+  }
+  const uniqueId = `${lineScopedId}#${suffix}`;
+  usedIds.add(uniqueId);
+  return uniqueId;
+}
+
+/**
+ * Ensures every function in an existing/cached analysis payload has a unique ID
+ * (backfills legacy cached repositories stored before class/line qualification).
+ */
+function ensureUniqueAnalysisFunctionIds(analysis) {
+  if (!analysis || !Array.isArray(analysis.functions)) return analysis;
+  const usedIds = new Set();
+  let changed = false;
+
+  const normalizedFunctions = analysis.functions.map((fn, idx) => {
+    const rawId = fn.id || `${fn.file || "unknown"}::${fn.name || `fn_${idx}`}`;
+    if (!usedIds.has(rawId)) {
+      usedIds.add(rawId);
+      return fn;
+    }
+    changed = true;
+    const uniqueId = makeUniqueFunctionId(
+      usedIds,
+      fn.file || "unknown",
+      fn.name || `fn_${idx}`,
+      fn.startLine || idx + 1
+    );
+    return { ...fn, id: uniqueId };
+  });
+
+  if (!changed) return analysis;
+  return {
+    ...analysis,
+    functions: normalizedFunctions,
+  };
+}
+
+/**
  * Parse JavaScript / TypeScript source code into an Abstract Syntax Tree (AST)
  * using @babel/parser and extract functions, imports, exports, call expressions,
  * AST node counts, and cyclomatic complexity.
@@ -87,6 +144,7 @@ function parseJsTsWithBabelAst(code, filePath, language) {
   }
 
   const lines = code.split(/\r?\n/);
+  const usedIds = new Set();
 
   const extractFunctionNode = (path, name, kind, isExported = false) => {
     const node = path.node;
@@ -171,7 +229,7 @@ function parseJsTsWithBabelAst(code, filePath, language) {
     const signature = `${asyncPrefix}function ${name}(${params.join(", ")})`;
 
     functions.push({
-      id: `${filePath}::${name}`,
+      id: makeUniqueFunctionId(usedIds, filePath, name, startLine),
       name,
       signature,
       file: filePath,
@@ -389,27 +447,77 @@ function parseOtherLanguageSyntax(code, filePath, language) {
     }
   });
 
-  // Match function blocks
+  // Match function blocks while tracking enclosing class / impl / receiver names
   const fnRegex =
     language === "Python"
       ? /^\s*(async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/
       : language === "Go"
-      ? /^\s*func\s+(?:\([^)]+\)\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)/
+      ? /^\s*func\s+(?:\([^)]*\*?([a-zA-Z0-9_]+)\s*\)\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)/
       : language === "Rust"
       ? /^\s*(?:pub\s+)?(async\s+)?fn\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/
       : /^\s*(?:public|private|protected)\s+(?:static\s+)?[a-zA-Z0-9_<>[\]]+\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/;
 
+  const classStack = [];
+  const usedIds = new Set();
+
   for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(fnRegex);
+    const rawLine = lines[i];
+    const trimmedLine = rawLine.trim();
+    const indent = rawLine.match(/^\s*/)?.[0]?.length || 0;
+
+    if (language === "Python") {
+      while (
+        classStack.length > 0 &&
+        trimmedLine &&
+        !trimmedLine.startsWith("#") &&
+        indent <= classStack[classStack.length - 1].indent
+      ) {
+        classStack.pop();
+      }
+      const pyClassMatch = rawLine.match(/^(\s*)class\s+([a-zA-Z0-9_]+)/);
+      if (pyClassMatch) {
+        classStack.push({ name: pyClassMatch[2], indent: pyClassMatch[1].length });
+        continue;
+      }
+    } else if (language === "Rust") {
+      const rustImplMatch = trimmedLine.match(
+        /^(?:impl(?:<[^>]+>)?\s+(?:[a-zA-Z0-9_:]+\s+for\s+)?|struct\s+)([a-zA-Z0-9_]+)/
+      );
+      if (rustImplMatch) {
+        classStack[0] = { name: rustImplMatch[1], indent };
+      }
+    } else if (language === "Java") {
+      const javaClassMatch = trimmedLine.match(
+        /^(?:public\s+|private\s+)?(?:abstract\s+|final\s+)?class\s+([a-zA-Z0-9_]+)/
+      );
+      if (javaClassMatch) {
+        classStack[0] = { name: javaClassMatch[1], indent };
+      }
+    }
+
+    const match = rawLine.match(fnRegex);
     if (!match) continue;
 
     const isAsync = Boolean(
       (language === "Python" || language === "Rust") && match[1]
     );
-    const name =
-      language === "Python" || language === "Rust" ? match[2] : match[1];
+    const rawName =
+      language === "Python" || language === "Rust" || language === "Go"
+        ? match[2]
+        : match[1];
     const rawParams =
-      (language === "Python" || language === "Rust" ? match[3] : match[2]) || "";
+      (language === "Python" || language === "Rust" || language === "Go"
+        ? match[3]
+        : match[2]) || "";
+
+    const ownerName =
+      language === "Go"
+        ? match[1] || null
+        : classStack.length > 0
+        ? classStack[classStack.length - 1].name
+        : null;
+    const name = ownerName ? `${ownerName}.${rawName}` : rawName;
+
     const params = rawParams
       .split(",")
       .map((s) => s.trim().split(/[\s:]/)[0])
@@ -434,20 +542,20 @@ function parseOtherLanguageSyntax(code, filePath, language) {
       .map((m) => m[1])
       .filter(
         (fn) =>
-          fn !== name &&
+          fn !== rawName &&
           !["if", "for", "while", "switch", "catch", "print", "len", "range"].includes(
             fn
           )
       );
 
     functions.push({
-      id: `${filePath}::${name}`,
+      id: makeUniqueFunctionId(usedIds, filePath, name, startLine),
       name,
       signature: `${isAsync ? "async " : ""}fn ${name}(${params.join(", ")})`,
       file: filePath,
       folder: getFolder(filePath),
       language,
-      kind: "function",
+      kind: ownerName ? "class-method" : "function",
       isAsync,
       isExported: true,
       params,
@@ -893,6 +1001,7 @@ function buildRepositoryAnalysis({
 
 module.exports = {
   buildRepositoryAnalysis,
+  ensureUniqueAnalysisFunctionIds,
   CODE_EXTENSIONS,
   getExtension,
 };

@@ -120,8 +120,7 @@ function buildDetailedReportMarkdown(report, analysis) {
       `- **Overview:** ${wf.overview}`,
       ...(wf.steps || []).map(
         (st) =>
-          `${st.stepNumber}. **${st.actionTitle}** (\`${st.file}\` → \`${st.functionName}\`): ${st.detailedExplanation}${
-            st.dataAndPayload ? ` | **Payload/State:** ${st.dataAndPayload}` : ""
+          `${st.stepNumber}. **${st.actionTitle}** (\`${st.file}\` → \`${st.functionName}\`): ${st.detailedExplanation}${st.dataAndPayload ? ` | **Payload/State:** ${st.dataAndPayload}` : ""
           }${st.errorHandlingAndEdgeCases ? ` | **Edge Cases:** ${st.errorHandlingAndEdgeCases}` : ""}`
       ),
       ``,
@@ -520,9 +519,8 @@ function RagMarkdownContent({ content, isStreaming = false }) {
                 {block.items.map((item, lIdx) => (
                   <li
                     key={lIdx}
-                    className={`flex items-start gap-2.5 text-[14px] leading-[1.68] ${
-                      item.indentLevel > 0 ? "pl-5 text-ink-soft" : "text-[#2c2a24]"
-                    }`}
+                    className={`flex items-start gap-2.5 text-[14px] leading-[1.68] ${item.indentLevel > 0 ? "pl-5 text-ink-soft" : "text-[#2c2a24]"
+                      }`}
                   >
                     {item.orderedNum ? (
                       <span className="mt-[2px] min-w-[1.25rem] shrink-0 font-mono text-[12px] font-semibold tabular-nums text-accent">
@@ -530,11 +528,10 @@ function RagMarkdownContent({ content, isStreaming = false }) {
                       </span>
                     ) : (
                       <span
-                        className={`mt-[10px] shrink-0 rounded-full ${
-                          item.indentLevel > 0
+                        className={`mt-[10px] shrink-0 rounded-full ${item.indentLevel > 0
                             ? "h-1 w-1 bg-muted/60"
                             : "h-1.5 w-1.5 bg-ink/45"
-                        }`}
+                          }`}
                       />
                     )}
                     <div className="min-w-0 flex-1">
@@ -768,7 +765,24 @@ function ProjectWorkspaceContent() {
     );
   }, [project]);
 
-  const allFunctions = useMemo(() => analysis?.functions || [], [analysis]);
+  const allFunctions = useMemo(() => {
+    const raw = analysis?.functions || [];
+    const seenIds = new Set();
+    return raw.map((fn, idx) => {
+      const baseId = fn.id || `${fn.file || "unknown"}::${fn.name || `fn_${idx}`}`;
+      if (!seenIds.has(baseId)) {
+        seenIds.add(baseId);
+        return fn.id === baseId ? fn : { ...fn, id: baseId };
+      }
+      let uniqueId = `${baseId}@L${fn.startLine || idx + 1}`;
+      let suffix = 2;
+      while (seenIds.has(uniqueId)) {
+        uniqueId = `${baseId}@L${fn.startLine || idx + 1}#${suffix++}`;
+      }
+      seenIds.add(uniqueId);
+      return { ...fn, id: uniqueId };
+    });
+  }, [analysis]);
   const allEdges = useMemo(() => analysis?.functionEdges || [], [analysis]);
 
   const filteredFunctions = useMemo(() => {
@@ -950,9 +964,8 @@ function ProjectWorkspaceContent() {
       {
         mode: "ARCHITECTURE",
         title: `Whole-project workflows & stack`,
-        prompt: `Explain the entire project architecture, tech stack, and major workflows of ${
-          analysis?.repoName || "this repository"
-        }`,
+        prompt: `Explain the entire project architecture, tech stack, and major workflows of ${analysis?.repoName || "this repository"
+          }`,
       },
       {
         mode: "PROJECT REPORT",
@@ -1208,7 +1221,7 @@ function ProjectWorkspaceContent() {
         if (!res.ok || !data?.report) {
           setBriefError(
             data?.message ||
-              "Unable to generate brief overview report right now."
+            "Unable to generate brief overview report right now."
           );
           return;
         }
@@ -1261,7 +1274,7 @@ function ProjectWorkspaceContent() {
       if (!res.ok || !data?.report) {
         setDetailedError(
           data?.message ||
-            "Unable to generate the detailed developer report right now."
+          "Unable to generate the detailed developer report right now."
         );
         return;
       }
@@ -1435,31 +1448,28 @@ function ProjectWorkspaceContent() {
                     key={item.id}
                     type="button"
                     onClick={() => setActiveSection(item.id)}
-                    className={`w-full rounded-lg border p-3 text-left transition-all ${
-                      isCurrent
+                    className={`w-full rounded-lg border p-3 text-left transition-all ${isCurrent
                         ? "border-ink bg-surface text-ink"
                         : "border-transparent bg-transparent text-ink-soft hover:border-line hover:bg-surface/60"
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span
-                          className={`font-mono text-[11px] ${
-                            isCurrent ? " font-semibold text-accent" : "text-muted"
-                          }`}
+                          className={`font-mono text-[11px] ${isCurrent ? " font-semibold text-accent" : "text-muted"
+                            }`}
                         >
                           {item.num}
                         </span>
                         <span className="text-sm font-medium">{item.label}</span>
                       </div>
                       <span
-                        className={`rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider ${
-                          item.active
+                        className={`rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider ${item.active
                             ? isCurrent
                               ? "bg-ink text-paper"
                               : "bg-sunken text-ink-soft"
                             : "border border-line bg-paper text-muted"
-                        }`}
+                          }`}
                       >
                         {item.badge}
                       </span>
@@ -1685,8 +1695,8 @@ function ProjectWorkspaceContent() {
                         idx === 0
                           ? "bg-ink"
                           : idx === 1
-                          ? "bg-accent"
-                          : "bg-sage"
+                            ? "bg-accent"
+                            : "bg-sage"
                       }
                       title={`${lang.name}: ${lang.percentage}%`}
                     />
@@ -1701,13 +1711,12 @@ function ProjectWorkspaceContent() {
                     >
                       <div className="flex items-center gap-2.5">
                         <span
-                          className={`h-2.5 w-2.5 rounded-full ${
-                            idx === 0
+                          className={`h-2.5 w-2.5 rounded-full ${idx === 0
                               ? "bg-ink"
                               : idx === 1
-                              ? "bg-accent"
-                              : "bg-sage"
-                          }`}
+                                ? "bg-accent"
+                                : "bg-sage"
+                            }`}
                         />
                         <span className="font-medium text-ink">{lang.name}</span>
                         <span className="font-mono text-[11px] text-muted">
@@ -2018,11 +2027,10 @@ function ProjectWorkspaceContent() {
                       key={lvl}
                       type="button"
                       onClick={() => setCriticalityFilter(lvl)}
-                      className={`rounded px-2.5 py-1 transition-colors ${
-                        criticalityFilter === lvl
+                      className={`rounded px-2.5 py-1 transition-colors ${criticalityFilter === lvl
                           ? "bg-ink font-medium text-paper"
                           : "text-muted hover:text-ink"
-                      }`}
+                        }`}
                     >
                       {lvl}
                     </button>
@@ -2353,11 +2361,10 @@ function ProjectWorkspaceContent() {
                                     )}
                                   </div>
                                   <span
-                                    className={`ml-2 shrink-0 rounded px-1.5 py-0.5 text-[9px] uppercase ${
-                                      dep.isExternal
+                                    className={`ml-2 shrink-0 rounded px-1.5 py-0.5 text-[9px] uppercase ${dep.isExternal
                                         ? "border border-line-strong bg-surface text-accent"
                                         : "bg-sunken text-ink-soft"
-                                    }`}
+                                      }`}
                                   >
                                     {dep.isExternal ? "External Pkg" : "Module"}
                                   </span>
@@ -2381,9 +2388,9 @@ function ProjectWorkspaceContent() {
                           </div>
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {selectedFunction.calledByFunctions?.length > 0 ? (
-                              selectedFunction.calledByFunctions.map((caller) => (
+                              selectedFunction.calledByFunctions.map((caller, cIdx) => (
                                 <button
-                                  key={caller.id}
+                                  key={`${caller.id}-${cIdx}`}
                                   type="button"
                                   onClick={() => setSelectedFnId(caller.id)}
                                   className="rounded border border-line-strong bg-surface px-2 py-1 font-mono text-[11px] text-ink transition-colors hover:border-accent hover:text-accent"
@@ -2406,9 +2413,9 @@ function ProjectWorkspaceContent() {
                           </div>
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {selectedFunction.callsFunctions?.length > 0 ? (
-                              selectedFunction.callsFunctions.map((callee) => (
+                              selectedFunction.callsFunctions.map((callee, cIdx) => (
                                 <button
-                                  key={callee.id}
+                                  key={`${callee.id}-${cIdx}`}
                                   type="button"
                                   onClick={() => setSelectedFnId(callee.id)}
                                   className="rounded border border-line-strong bg-surface px-2 py-1 font-mono text-[11px] text-ink transition-colors hover:border-accent hover:text-accent"
@@ -2452,9 +2459,8 @@ function ProjectWorkspaceContent() {
                 onMouseMove={handleCanvasMouseMove}
                 onMouseUp={handleCanvasMouseUp}
                 onMouseLeave={handleCanvasMouseUp}
-                className={`relative flex-1 overflow-auto bg-paper ${
-                  isDragging ? "cursor-grabbing" : "cursor-grab"
-                }`}
+                className={`relative flex-1 overflow-auto bg-paper ${isDragging ? "cursor-grabbing" : "cursor-grab"
+                  }`}
                 style={{
                   backgroundImage:
                     "radial-gradient(#d5d3cb 1px, transparent 1px)",
@@ -2551,7 +2557,7 @@ function ProjectWorkspaceContent() {
                     const endY = edge.y2 - (dy / dist) * 32;
 
                     return (
-                      <g key={edge.id}>
+                      <g key={`${edge.id}-${edge.source}-${edge.target}-${edge.type || ""}`}>
                         <path
                           d={`M ${startX} ${startY} Q ${midX} ${midY} ${endX} ${endY}`}
                           fill="none"
@@ -2593,9 +2599,8 @@ function ProjectWorkspaceContent() {
                       <g
                         key={node.id}
                         data-fn-node={node.name}
-                        transform={`translate(${node.x - boxW / 2}, ${
-                          node.y - boxH / 2
-                        })`}
+                        transform={`translate(${node.x - boxW / 2}, ${node.y - boxH / 2
+                          })`}
                         onClick={(e) => {
                           e.stopPropagation();
                           setSelectedFnId(node.id);
@@ -2922,11 +2927,10 @@ function ProjectWorkspaceContent() {
                               <span className="truncate font-mono text-[11px] text-muted">
                                 ·{" "}
                                 {msg.telemetry.functionsRetrieved > 0
-                                  ? `${msg.telemetry.functionsRetrieved} AST ${
-                                      msg.telemetry.functionsRetrieved === 1
-                                        ? "fn"
-                                        : "fns"
-                                    }`
+                                  ? `${msg.telemetry.functionsRetrieved} AST ${msg.telemetry.functionsRetrieved === 1
+                                    ? "fn"
+                                    : "fns"
+                                  }`
                                   : msg.telemetry.intentLabel || msg.intent}
                                 {msg.telemetry.tokensSent > 0 && (
                                   <>
@@ -2961,9 +2965,8 @@ function ProjectWorkspaceContent() {
                                 >
                                   {isContextOpen
                                     ? "Hide AST ▴"
-                                    : `AST Context (${
-                                        msg.retrievedFunctions?.length || 0
-                                      }) ▾`}
+                                    : `AST Context (${msg.retrievedFunctions?.length || 0
+                                    }) ▾`}
                                 </button>
                               )}
                           </div>
@@ -3196,22 +3199,20 @@ function ProjectWorkspaceContent() {
                   <button
                     type="button"
                     onClick={() => setReportMode("brief")}
-                    className={`rounded-lg px-3.5 py-2 font-mono text-xs transition-colors ${
-                      reportMode === "brief"
+                    className={`rounded-lg px-3.5 py-2 font-mono text-xs transition-colors ${reportMode === "brief"
                         ? "bg-ink font-medium text-paper"
                         : "text-muted hover:text-ink"
-                    }`}
+                      }`}
                   >
                     01 · Brief Overview
                   </button>
                   <button
                     type="button"
                     onClick={() => setReportMode("detailed")}
-                    className={`rounded-lg px-3.5 py-2 font-mono text-xs transition-colors ${
-                      reportMode === "detailed"
+                    className={`rounded-lg px-3.5 py-2 font-mono text-xs transition-colors ${reportMode === "detailed"
                         ? "bg-ink font-medium text-paper"
                         : "text-muted hover:text-ink"
-                    }`}
+                      }`}
                   >
                     02 · Detailed Audit
                   </button>
@@ -3479,9 +3480,8 @@ function ProjectWorkspaceContent() {
                                   className="flex flex-1 flex-col items-stretch gap-2 lg:flex-row lg:items-center"
                                 >
                                   <div
-                                    className={`flex h-full flex-1 flex-col justify-between rounded-xl border border-line-strong border-t-[3px] bg-surface p-4 ${
-                                      accents[lIdx % accents.length]
-                                    }`}
+                                    className={`flex h-full flex-1 flex-col justify-between rounded-xl border border-line-strong border-t-[3px] bg-surface p-4 ${accents[lIdx % accents.length]
+                                      }`}
                                   >
                                     <div>
                                       <div className="font-mono text-[10px] uppercase tracking-wider text-muted">
@@ -3496,25 +3496,25 @@ function ProjectWorkspaceContent() {
                                     </div>
                                     {(layer.technologies?.length > 0 ||
                                       layer.keyFiles?.length > 0) && (
-                                      <div className="mt-3 flex flex-wrap gap-1 border-t border-line pt-2.5">
-                                        {layer.technologies?.slice(0, 3).map((t) => (
-                                          <span
-                                            key={t}
-                                            className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-ink"
-                                          >
-                                            {t}
-                                          </span>
-                                        ))}
-                                        {layer.keyFiles?.slice(0, 2).map((kf) => (
-                                          <span
-                                            key={kf}
-                                            className="truncate rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted"
-                                          >
-                                            {kf.split("/").pop()}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
+                                        <div className="mt-3 flex flex-wrap gap-1 border-t border-line pt-2.5">
+                                          {layer.technologies?.slice(0, 3).map((t) => (
+                                            <span
+                                              key={t}
+                                              className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-ink"
+                                            >
+                                              {t}
+                                            </span>
+                                          ))}
+                                          {layer.keyFiles?.slice(0, 2).map((kf) => (
+                                            <span
+                                              key={kf}
+                                              className="truncate rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                                            >
+                                              {kf.split("/").pop()}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
                                   </div>
 
                                   {lIdx < briefReport.architectureDesign.layers.length - 1 && (
@@ -3792,8 +3792,8 @@ function ProjectWorkspaceContent() {
                                     {fnItem.interactsWith
                                       ? `Connects: ${fnItem.interactsWith}`
                                       : matchedAstFn
-                                      ? `${matchedAstFn.affectedFilesCount} file(s) impact`
-                                      : ""}
+                                        ? `${matchedAstFn.affectedFilesCount} file(s) impact`
+                                        : ""}
                                   </span>
                                   {matchedAstFn && (
                                     <div className="flex shrink-0 items-center gap-2 font-mono text-[10.5px]">
@@ -4045,21 +4045,18 @@ function ProjectWorkspaceContent() {
                           { id: "chap-workflows", label: "02 · Execution Workflows" },
                           {
                             id: "chap-packages",
-                            label: `03 · Libraries & Versions (${
-                              detailedReport.packagesAndLibrariesAudit?.length || 0
-                            })`,
+                            label: `03 · Libraries & Versions (${detailedReport.packagesAndLibrariesAudit?.length || 0
+                              })`,
                           },
                           {
                             id: "chap-files",
-                            label: `04 · All Files (${
-                              detailedReport.fileWalkthroughs?.length || 0
-                            })`,
+                            label: `04 · All Files (${detailedReport.fileWalkthroughs?.length || 0
+                              })`,
                           },
                           {
                             id: "chap-functions",
-                            label: `05 · All Functions (${
-                              detailedReport.functionEncyclopedia?.length || 0
-                            })`,
+                            label: `05 · All Functions (${detailedReport.functionEncyclopedia?.length || 0
+                              })`,
                           },
                           {
                             id: "chap-playbook",
@@ -4110,57 +4107,57 @@ function ProjectWorkspaceContent() {
 
                       {detailedReport.systemArchitectureDeepDive?.subsystemBreakdown
                         ?.length > 0 && (
-                        <div className="space-y-4 pt-2">
-                          <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted">
-                            Subsystem-by-Subsystem Engineering Breakdown
-                          </div>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            {detailedReport.systemArchitectureDeepDive.subsystemBreakdown.map(
-                              (sub, idx) => (
-                                <div
-                                  key={`${sub.subsystem}-${idx}`}
-                                  className="flex flex-col justify-between rounded-xl border border-line bg-paper p-5 space-y-3"
-                                >
-                                  <div className="space-y-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <h3 className="text-[15px] font-semibold text-ink">
-                                        {sub.subsystem}
-                                      </h3>
-                                      <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-accent">
-                                        0{idx + 1}
-                                      </span>
+                          <div className="space-y-4 pt-2">
+                            <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted">
+                              Subsystem-by-Subsystem Engineering Breakdown
+                            </div>
+                            <div className="grid gap-4 md:grid-cols-2">
+                              {detailedReport.systemArchitectureDeepDive.subsystemBreakdown.map(
+                                (sub, idx) => (
+                                  <div
+                                    key={`${sub.subsystem}-${idx}`}
+                                    className="flex flex-col justify-between rounded-xl border border-line bg-paper p-5 space-y-3"
+                                  >
+                                    <div className="space-y-2">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <h3 className="text-[15px] font-semibold text-ink">
+                                          {sub.subsystem}
+                                        </h3>
+                                        <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10px] text-accent">
+                                          0{idx + 1}
+                                        </span>
+                                      </div>
+                                      {sub.files?.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {sub.files.map((fp) => (
+                                            <span
+                                              key={fp}
+                                              className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10.5px] text-ink"
+                                            >
+                                              {fp}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                      <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
+                                        {renderInlineMarkdown(sub.deepExplanation)}
+                                      </p>
                                     </div>
-                                    {sub.files?.length > 0 && (
-                                      <div className="flex flex-wrap gap-1.5">
-                                        {sub.files.map((fp) => (
-                                          <span
-                                            key={fp}
-                                            className="rounded border border-line bg-surface px-2 py-0.5 font-mono text-[10.5px] text-ink"
-                                          >
-                                            {fp}
-                                          </span>
-                                        ))}
+
+                                    {sub.dataFlowAndState && (
+                                      <div className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
+                                        <strong className="font-mono text-[10px] uppercase tracking-wider text-accent">
+                                          State &amp; Data Flow:{" "}
+                                        </strong>
+                                        {renderInlineMarkdown(sub.dataFlowAndState)}
                                       </div>
                                     )}
-                                    <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
-                                      {renderInlineMarkdown(sub.deepExplanation)}
-                                    </p>
                                   </div>
-
-                                  {sub.dataFlowAndState && (
-                                    <div className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
-                                      <strong className="font-mono text-[10px] uppercase tracking-wider text-accent">
-                                        State &amp; Data Flow:{" "}
-                                      </strong>
-                                      {renderInlineMarkdown(sub.dataFlowAndState)}
-                                    </div>
-                                  )}
-                                </div>
-                              )
-                            )}
+                                )
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
                     </section>
 
                     {/* =================================================== */}
@@ -4417,25 +4414,25 @@ function ProjectWorkspaceContent() {
 
                               {(f.definedFunctions?.length > 0 ||
                                 f.externalImports?.length > 0) && (
-                                <div className="flex flex-wrap gap-1.5 pt-0.5">
-                                  {f.definedFunctions?.map((dfn) => (
-                                    <span
-                                      key={dfn}
-                                      className="rounded border border-line-strong bg-surface px-2 py-0.5 font-mono text-[10.5px] text-ink"
-                                    >
-                                      fn: {dfn}
-                                    </span>
-                                  ))}
-                                  {f.externalImports?.map((imp) => (
-                                    <span
-                                      key={imp}
-                                      className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-muted"
-                                    >
-                                      pkg: {imp}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
+                                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                    {f.definedFunctions?.map((dfn) => (
+                                      <span
+                                        key={dfn}
+                                        className="rounded border border-line-strong bg-surface px-2 py-0.5 font-mono text-[10.5px] text-ink"
+                                      >
+                                        fn: {dfn}
+                                      </span>
+                                    ))}
+                                    {f.externalImports?.map((imp) => (
+                                      <span
+                                        key={imp}
+                                        className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-muted"
+                                      >
+                                        pkg: {imp}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
                             </div>
                           ))}
                         </div>
@@ -4653,155 +4650,155 @@ function ProjectWorkspaceContent() {
                       {/* 6A. Environment Variables Checklist */}
                       {detailedReport.outOfTheBoxPlaybook?.environmentVariables
                         ?.length > 0 && (
-                        <div className="space-y-3">
-                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
-                            01 · Required Environment Variables &amp; Configuration
-                          </h3>
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            {detailedReport.outOfTheBoxPlaybook.environmentVariables.map(
-                              (env) => (
-                                <div
-                                  key={env.name}
-                                  className="rounded-xl border border-line bg-paper p-4 space-y-1.5"
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <code className="rounded bg-sunken px-2 py-0.5 font-mono text-xs font-semibold text-accent">
-                                      {env.name}
-                                    </code>
-                                    <span className="truncate font-mono text-[10.5px] text-muted">
-                                      {(env.usedInFiles || []).join(", ")}
-                                    </span>
-                                  </div>
-                                  <p className="text-xs leading-relaxed text-[#2b2923]">
-                                    {env.purpose}
-                                  </p>
-                                  {env.exampleFormat && (
-                                    <div className="font-mono text-[11px] text-muted">
-                                      Example: <code>{env.exampleFormat}</code>
+                          <div className="space-y-3">
+                            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                              01 · Required Environment Variables &amp; Configuration
+                            </h3>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {detailedReport.outOfTheBoxPlaybook.environmentVariables.map(
+                                (env) => (
+                                  <div
+                                    key={env.name}
+                                    className="rounded-xl border border-line bg-paper p-4 space-y-1.5"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <code className="rounded bg-sunken px-2 py-0.5 font-mono text-xs font-semibold text-accent">
+                                        {env.name}
+                                      </code>
+                                      <span className="truncate font-mono text-[10.5px] text-muted">
+                                        {(env.usedInFiles || []).join(", ")}
+                                      </span>
                                     </div>
-                                  )}
-                                </div>
-                              )
-                            )}
+                                    <p className="text-xs leading-relaxed text-[#2b2923]">
+                                      {env.purpose}
+                                    </p>
+                                    {env.exampleFormat && (
+                                      <div className="font-mono text-[11px] text-muted">
+                                        Example: <code>{env.exampleFormat}</code>
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {/* 6B. Security, Edge Cases & Production Hardening Audit */}
                       {detailedReport.outOfTheBoxPlaybook?.securityAndEdgeCasesAudit
                         ?.length > 0 && (
-                        <div className="space-y-3">
-                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
-                            02 · Security, Edge-Case &amp; Production Hardening Audit
-                          </h3>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            {detailedReport.outOfTheBoxPlaybook.securityAndEdgeCasesAudit.map(
-                              (sec, idx) => (
-                                <div
-                                  key={`${sec.fileAndFunction}-${idx}`}
-                                  className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
-                                >
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <span className="rounded bg-[#fbeae4] px-2 py-0.5 font-mono text-[10px] font-semibold text-accent">
-                                      {sec.severity} · {sec.category}
-                                    </span>
-                                    {sec.fileAndFunction && (
-                                      <span className="font-mono text-[11px] text-ink">
-                                        {sec.fileAndFunction}
+                          <div className="space-y-3">
+                            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                              02 · Security, Edge-Case &amp; Production Hardening Audit
+                            </h3>
+                            <div className="grid gap-4 md:grid-cols-2">
+                              {detailedReport.outOfTheBoxPlaybook.securityAndEdgeCasesAudit.map(
+                                (sec, idx) => (
+                                  <div
+                                    key={`${sec.fileAndFunction}-${idx}`}
+                                    className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="rounded bg-[#fbeae4] px-2 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                                        {sec.severity} · {sec.category}
                                       </span>
-                                    )}
+                                      {sec.fileAndFunction && (
+                                        <span className="font-mono text-[11px] text-ink">
+                                          {sec.fileAndFunction}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[13.5px] leading-relaxed text-[#2b2923]">
+                                      <strong className="text-ink">Finding: </strong>
+                                      {renderInlineMarkdown(sec.finding)}
+                                    </p>
+                                    <p className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
+                                      <strong className="font-mono text-[10px] uppercase text-sage">
+                                        Recommended Fix:{" "}
+                                      </strong>
+                                      {renderInlineMarkdown(sec.howToFix)}
+                                    </p>
                                   </div>
-                                  <p className="text-[13.5px] leading-relaxed text-[#2b2923]">
-                                    <strong className="text-ink">Finding: </strong>
-                                    {renderInlineMarkdown(sec.finding)}
-                                  </p>
-                                  <p className="rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-soft">
-                                    <strong className="font-mono text-[10px] uppercase text-sage">
-                                      Recommended Fix:{" "}
-                                    </strong>
-                                    {renderInlineMarkdown(sec.howToFix)}
-                                  </p>
-                                </div>
-                              )
-                            )}
+                                )
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {/* 6C. How to Extend This Codebase */}
                       {detailedReport.outOfTheBoxPlaybook?.extensionPlaybook
                         ?.length > 0 && (
-                        <div className="space-y-3">
-                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
-                            03 · Developer Extension Guide (How to Add New Features)
-                          </h3>
-                          <div className="space-y-4">
-                            {detailedReport.outOfTheBoxPlaybook.extensionPlaybook.map(
-                              (ext, idx) => (
-                                <div
-                                  key={`${ext.scenario}-${idx}`}
-                                  className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
-                                >
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <h4 className="text-sm font-semibold text-ink">
-                                      {ext.scenario}
-                                    </h4>
-                                    {ext.filesToTouch?.length > 0 && (
-                                      <div className="flex flex-wrap gap-1.5">
-                                        {ext.filesToTouch.map((ft) => (
-                                          <span
-                                            key={ft}
-                                            className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-ink"
-                                          >
-                                            {ft}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
+                          <div className="space-y-3">
+                            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                              03 · Developer Extension Guide (How to Add New Features)
+                            </h3>
+                            <div className="space-y-4">
+                              {detailedReport.outOfTheBoxPlaybook.extensionPlaybook.map(
+                                (ext, idx) => (
+                                  <div
+                                    key={`${ext.scenario}-${idx}`}
+                                    className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <h4 className="text-sm font-semibold text-ink">
+                                        {ext.scenario}
+                                      </h4>
+                                      {ext.filesToTouch?.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {ext.filesToTouch.map((ft) => (
+                                            <span
+                                              key={ft}
+                                              className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-ink"
+                                            >
+                                              {ft}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
+                                      {renderInlineMarkdown(ext.stepByStepGuide)}
+                                    </p>
                                   </div>
-                                  <p className="text-[13.5px] leading-[1.7] text-[#2b2923]">
-                                    {renderInlineMarkdown(ext.stepByStepGuide)}
-                                  </p>
-                                </div>
-                              )
-                            )}
+                                )
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
 
                       {/* 6D. Technical Interview & Viva Q&A */}
                       {detailedReport.outOfTheBoxPlaybook?.interviewAndVivaQa
                         ?.length > 0 && (
-                        <div className="space-y-3">
-                          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
-                            04 · Technical Interview, Code Review &amp; Viva Q&amp;A
-                          </h3>
-                          <div className="space-y-4">
-                            {detailedReport.outOfTheBoxPlaybook.interviewAndVivaQa.map(
-                              (qa, idx) => (
-                                <div
-                                  key={`${qa.question}-${idx}`}
-                                  className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
-                                >
-                                  <div className="flex flex-wrap items-start justify-between gap-2">
-                                    <h4 className="text-[14.5px] font-semibold text-ink">
-                                      Q{idx + 1}. {qa.question}
-                                    </h4>
-                                    {qa.keyFilesAndFunctions && (
-                                      <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-accent">
-                                        {qa.keyFilesAndFunctions}
-                                      </span>
-                                    )}
+                          <div className="space-y-3">
+                            <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-ink">
+                              04 · Technical Interview, Code Review &amp; Viva Q&amp;A
+                            </h3>
+                            <div className="space-y-4">
+                              {detailedReport.outOfTheBoxPlaybook.interviewAndVivaQa.map(
+                                (qa, idx) => (
+                                  <div
+                                    key={`${qa.question}-${idx}`}
+                                    className="rounded-xl border border-line bg-paper p-5 space-y-2.5"
+                                  >
+                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                      <h4 className="text-[14.5px] font-semibold text-ink">
+                                        Q{idx + 1}. {qa.question}
+                                      </h4>
+                                      {qa.keyFilesAndFunctions && (
+                                        <span className="rounded bg-sunken px-2 py-0.5 font-mono text-[10.5px] text-accent">
+                                          {qa.keyFilesAndFunctions}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[13.5px] leading-[1.72] text-[#2b2923]">
+                                      {renderInlineMarkdown(qa.idealAnswer)}
+                                    </p>
                                   </div>
-                                  <p className="text-[13.5px] leading-[1.72] text-[#2b2923]">
-                                    {renderInlineMarkdown(qa.idealAnswer)}
-                                  </p>
-                                </div>
-                              )
-                            )}
+                                )
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        )}
                     </section>
                   </div>
                 )}

@@ -14,6 +14,7 @@ const {
 } = require("../lib/prisma");
 const {
   buildRepositoryAnalysis,
+  ensureUniqueAnalysisFunctionIds,
   CODE_EXTENSIONS,
   getExtension,
 } = require("../lib/astEngine");
@@ -860,7 +861,13 @@ router.get("/:id", requireAuth, async (req, res) => {
     (p) => p.id === req.params.id && p.userId === req.user.id
   );
   if (localMatch && localMatch.analysisData) {
-    return res.status(200).json({ status: "OK", project: localMatch });
+    return res.status(200).json({
+      status: "OK",
+      project: {
+        ...localMatch,
+        analysisData: ensureUniqueAnalysisFunctionIds(localMatch.analysisData),
+      },
+    });
   }
 
   try {
@@ -885,7 +892,10 @@ router.get("/:id", requireAuth, async (req, res) => {
     syncProjectToLocalMirror(project);
     return res.status(200).json({
       status: "OK",
-      project,
+      project: {
+        ...project,
+        analysisData: ensureUniqueAnalysisFunctionIds(project.analysisData),
+      },
     });
   } catch (err) {
     console.warn(
@@ -1071,26 +1081,28 @@ async function loadAuthorizedProjectWithAnalysis(projectId, userId) {
 
   if (!project) return null;
 
-  const analysis = project.analysisData || {
-    repoName: project.name,
-    fullName: project.fullName,
-    repoUrl: project.repoUrl,
-    description: project.description,
-    defaultBranch: project.defaultBranch || "main",
-    primaryLanguage: project.primaryLanguage || "TypeScript",
-    fileCount: project.fileCount || 0,
-    functionCount: project.functionCount || 0,
-    packageCount: project.packageCount || 0,
-    dependencyCount: project.dependencyCount || 0,
-    totalLines: project.totalLines || 0,
-    astNodeCount: project.astNodeCount || 0,
-    healthScore: project.healthScore || 90,
-    languages: [],
-    packages: [],
-    files: [],
-    functions: [],
-    functionEdges: [],
-  };
+  const analysis = ensureUniqueAnalysisFunctionIds(
+    project.analysisData || {
+      repoName: project.name,
+      fullName: project.fullName,
+      repoUrl: project.repoUrl,
+      description: project.description,
+      defaultBranch: project.defaultBranch || "main",
+      primaryLanguage: project.primaryLanguage || "TypeScript",
+      fileCount: project.fileCount || 0,
+      functionCount: project.functionCount || 0,
+      packageCount: project.packageCount || 0,
+      dependencyCount: project.dependencyCount || 0,
+      totalLines: project.totalLines || 0,
+      astNodeCount: project.astNodeCount || 0,
+      healthScore: project.healthScore || 90,
+      languages: [],
+      packages: [],
+      files: [],
+      functions: [],
+      functionEdges: [],
+    }
+  );
 
   return { project, analysis };
 }

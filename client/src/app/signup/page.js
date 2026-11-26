@@ -3,8 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AuthShell, { Field, FormError, SubmitButton, inputClass } from "../../components/AuthShell";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { API_BASE } from "../../lib/api";
 
 function passwordStrength(pw) {
   if (!pw) return { score: 0, label: "Use 8 or more characters." };

@@ -1,3 +1,4 @@
+const os = require("os");
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -10,7 +11,7 @@ const PORT = process.env.PORT || 4000;
 
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN || "http://localhost:3000",
+    origin: true,
     credentials: true,
   })
 );
@@ -39,6 +40,9 @@ app.get("/api/health", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/projects", projectRoutes);
 
-app.listen(PORT, () => {
-  console.log(`[ARCHON ENGINE] Server listening on http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  const lanIp = Object.values(os.networkInterfaces())
+    .flat()
+    .find((iface) => iface && iface.family === "IPv4" && !iface.internal)?.address;
+  console.log(`[ARCHON ENGINE] Server listening on http://localhost:${PORT}${lanIp ? ` (LAN: http://${lanIp}:${PORT})` : ""}`);
 });

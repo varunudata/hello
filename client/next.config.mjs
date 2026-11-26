@@ -1,13 +1,24 @@
+import os from "os";
+
+const lanIps = Object.values(os.networkInterfaces())
+  .flat()
+  .filter((iface) => iface && iface.family === "IPv4" && !iface.internal)
+  .map((iface) => iface.address);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  /* config options here */
+  allowedDevOrigins: [
+    "localhost",
+    "127.0.0.1",
+    "*.local",
+    ...lanIps,
+  ],
   experimental: {
     agentFeedback: true,
     agentUpgrade: "security",
   },
   cacheComponents: true,
   partialPrefetching: true,
-  reactCompiler: true,
   turbopack: {
     rules: {
       "*.css": {
@@ -15,6 +26,14 @@ const nextConfig = {
         as: "*.css",
       },
     },
+  },
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "http://127.0.0.1:4000/api/:path*",
+      },
+    ];
   },
 };
 
